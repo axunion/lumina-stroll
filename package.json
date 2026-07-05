@@ -1,0 +1,29 @@
+{
+  "name": "lumina-stroll",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "prepare": "lefthook install",
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "check": "biome check . && tsc -b",
+    "fix": "biome check --write ."
+  },
+  "dependencies": {
+    "@kobalte/core": "^0.13.12",
+    "lucide-solid": "^1.23.0",
+    "solid-js": "^1.9.13"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.2",
+    "@types/node": "^24.13.2",
+    "lefthook": "^2.1.9",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1",
+    "vite-plugin-solid": "^2.11.12",
+    "vitest": "^4.1.9"
+  }
+}
