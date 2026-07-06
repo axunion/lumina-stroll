@@ -1,8 +1,8 @@
 import { onCleanup, onMount } from "solid-js";
 import styles from "./Game.module.css";
-import { clampDelta } from "./gameLogic";
+import { biomeBlendAt, biomeIdAt, clampDelta, lerpColor } from "./gameLogic";
 import type { Rgb } from "./gameStore";
-import { BIOMES, gameState } from "./gameStore";
+import { BIOMES, gameState, setCurrentBiome } from "./gameStore";
 
 function rgbCss([r, g, b]: Rgb): string {
   return `rgb(${r}, ${g}, ${b})`;
@@ -36,8 +36,11 @@ const PLAYER_SPAWN = { x: 240, y: 600 };
 
 // Player's own glow, same family as the footprint particle color (spec/03-reference.md §3).
 const PLAYER_COLOR = "rgb(255, 240, 200)";
-const FOREST_BACKGROUND = rgbCss(BIOMES[0].background);
-const FOREST_TILE_ACCENT = rgbCss(BIOMES[0].tileAccent);
+
+// Implementation choice: spec/02-game-design.md §4 only specifies "sine, ±4%, slow" for
+// the player light pulse — no period is given in spec/03-reference.md.
+const LIGHT_PULSE_PERIOD_MS = 3000;
+const LIGHT_PULSE_AMPLITUDE = 0.04;
 
 const MOVE_KEYS = new Set([
   "ArrowUp",
@@ -61,6 +64,10 @@ function GameCanvas() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    const lightCanvas = document.createElement("canvas");
+    const lightCtx = lightCanvas.getContext("2d");
+    if (!lightCtx) return;
+
     const player = { x: PLAYER_SPAWN.x, y: PLAYER_SPAWN.y };
     const camera = { x: 0, y: 0 };
     const keys = new Set<string>();
@@ -68,14 +75,18 @@ function GameCanvas() {
     let viewHeight = 0;
     let lastTime = 0;
     let rafId = 0;
+    let previousBiome = biomeIdAt(PLAYER_SPAWN.x, CONFIG.biomeBoundaryX);
 
     function handleResize() {
-      if (!wrapper || !canvas || !ctx) return;
+      if (!wrapper || !canvas || !ctx || !lightCtx) return;
       const dpr = window.devicePixelRatio || 1;
       const { clientWidth, clientHeight } = wrapper;
       canvas.width = clientWidth * dpr;
       canvas.height = clientHeight * dpr;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      lightCanvas.width = clientWidth * dpr;
+      lightCanvas.height = clientHeight * dpr;
+      lightCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
       viewWidth = clientWidth;
       viewHeight = clientHeight;
     }
@@ -126,9 +137,15 @@ function GameCanvas() {
 
       camera.x = updateCameraAxis(player.x, viewWidth, CONFIG.worldWidth);
       camera.y = updateCameraAxis(player.y, viewHeight, CONFIG.worldHeight);
+
+      const nextBiome = biomeIdAt(player.x, CONFIG.biomeBoundaryX);
+      if (nextBiome !== previousBiome) {
+        previousBiome = nextBiome;
+        setCurrentBiome(nextBiome);
+      }
     }
 
-    function renderTiles() {
+    function renderTiles(backgroundColor: string, tileAccentColor: string) {
       if (!ctx) return;
       const startCol = Math.floor(camera.x / CONFIG.tileSize);
       const endCol = Math.ceil((camera.x + viewWidth) / CONFIG.tileSize);
@@ -138,7 +155,7 @@ function GameCanvas() {
       for (let row = startRow; row < endRow; row++) {
         for (let col = startCol; col < endCol; col++) {
           ctx.fillStyle =
-            (col + row) % 2 === 0 ? FOREST_BACKGROUND : FOREST_TILE_ACCENT;
+            (col + row) % 2 === 0 ? backgroundColor : tileAccentColor;
           ctx.fillRect(
             col * CONFIG.tileSize,
             row * CONFIG.tileSize,
@@ -167,14 +184,66 @@ function GameCanvas() {
       ctx.fill();
     }
 
-    function render() {
+    // Darkens the screen and punches a soft hole around the player (spec/02-game-design.md §4).
+    function renderLighting(now: number) {
+      if (!lightCtx) return;
+      lightCtx.clearRect(0, 0, viewWidth, viewHeight);
+      lightCtx.globalCompositeOperation = "source-over";
+      lightCtx.fillStyle = `rgba(0, 0, 0, ${CONFIG.darknessAlpha})`;
+      lightCtx.fillRect(0, 0, viewWidth, viewHeight);
+
+      const pulse =
+        1 +
+        LIGHT_PULSE_AMPLITUDE *
+          Math.sin((now / LIGHT_PULSE_PERIOD_MS) * Math.PI * 2);
+      const coreRadius = CONFIG.lightRadius * pulse;
+      const outerRadius = coreRadius + CONFIG.lightSoftness;
+      const screenX = player.x - camera.x;
+      const screenY = player.y - camera.y;
+
+      lightCtx.globalCompositeOperation = "destination-out";
+      const gradient = lightCtx.createRadialGradient(
+        screenX,
+        screenY,
+        0,
+        screenX,
+        screenY,
+        outerRadius,
+      );
+      gradient.addColorStop(0, "rgba(0, 0, 0, 1)");
+      gradient.addColorStop(coreRadius / outerRadius, "rgba(0, 0, 0, 1)");
+      gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+      lightCtx.fillStyle = gradient;
+      lightCtx.beginPath();
+      lightCtx.arc(screenX, screenY, outerRadius, 0, Math.PI * 2);
+      lightCtx.fill();
+      lightCtx.globalCompositeOperation = "source-over";
+    }
+
+    function render(now: number) {
       if (!ctx) return;
       ctx.clearRect(0, 0, viewWidth, viewHeight);
+
+      const blend = biomeBlendAt(
+        player.x,
+        CONFIG.biomeBoundaryX,
+        CONFIG.biomeBlendWidth,
+      );
+      const backgroundColor = rgbCss(
+        lerpColor(BIOMES[0].background, BIOMES[1].background, blend),
+      );
+      const tileAccentColor = rgbCss(
+        lerpColor(BIOMES[0].tileAccent, BIOMES[1].tileAccent, blend),
+      );
+
       ctx.save();
       ctx.translate(-camera.x, -camera.y);
-      renderTiles();
+      renderTiles(backgroundColor, tileAccentColor);
       renderPlayer();
       ctx.restore();
+
+      renderLighting(now);
+      ctx.drawImage(lightCanvas, 0, 0, viewWidth, viewHeight);
     }
 
     function loop(now: number) {
@@ -182,7 +251,7 @@ function GameCanvas() {
       const dt = clampDelta(now - lastTime, CONFIG.maxDeltaMs);
       lastTime = now;
       if (!gameState.isMenuOpen) update(dt);
-      render();
+      render(now);
     }
 
     handleResize();
