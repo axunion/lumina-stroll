@@ -92,6 +92,7 @@ function GameCanvas() {
     }
 
     function handleKeyDown(e: KeyboardEvent) {
+      if (gameState.isMenuOpen) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (!MOVE_KEYS.has(e.code)) return;
       if (ARROW_KEYS.has(e.code)) e.preventDefault();
@@ -250,7 +251,11 @@ function GameCanvas() {
       rafId = requestAnimationFrame(loop);
       const dt = clampDelta(now - lastTime, CONFIG.maxDeltaMs);
       lastTime = now;
-      if (!gameState.isMenuOpen) update(dt);
+      const menuOpen = gameState.isMenuOpen;
+      // Clear held keys while the menu is open so the Dialog's focus trap
+      // can never leave a stuck key that resumes movement once it closes.
+      if (menuOpen) keys.clear();
+      else update(dt);
       render(now);
     }
 

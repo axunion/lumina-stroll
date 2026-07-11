@@ -9,3 +9,17 @@ body {
   overflow: hidden;
   background: #000;
 }
+
+/*
+ * Theme tokens (spec/04-ui.md §5.1), mapped from the Cave palette in
+ * spec/03-reference.md §3. Declared on :root (not .appRoot) so that Kobalte's
+ * Dialog.Portal content, which renders outside the appRoot DOM subtree, can
+ * still resolve these custom properties.
+ */
+:root {
+  --colorBgDeep: rgb(22, 20, 44);
+  --colorSurface: rgba(22, 20, 44, 0.72);
+  --colorText: rgb(220, 245, 255);
+  --colorAccent: rgb(140, 235, 255);
+  --colorFlame: rgb(150, 170, 255);
+}
