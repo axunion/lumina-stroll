@@ -1,3 +1,7 @@
+import ChevronDown from "lucide-solid/icons/chevron-down";
+import ChevronLeft from "lucide-solid/icons/chevron-left";
+import ChevronRight from "lucide-solid/icons/chevron-right";
+import ChevronUp from "lucide-solid/icons/chevron-up";
 import { onCleanup, onMount } from "solid-js";
 import styles from "./Game.module.css";
 import {
@@ -52,6 +56,14 @@ interface FloatingText {
   bornAt: number;
 }
 
+// reduced-motion stand-in for the crystal pickup burst (spec/02-game-design.md §9):
+// a single expanding ring stroke instead of particles.
+interface Ring {
+  x: number;
+  y: number;
+  bornAt: number;
+}
+
 function rgbCss([r, g, b]: Rgb): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
@@ -102,6 +114,40 @@ function punchLightHole(
   ctx.beginPath();
   ctx.arc(screenX, screenY, outerRadius, 0, Math.PI * 2);
   ctx.fill();
+}
+
+// Shared "1 ± amplitude·sin" oscillation used by both the brazier flame flicker and the
+// player light pulse — kept local to this file rather than gameLogic.ts, whose exported
+// function set is fixed by spec/03-reference.md §6.
+function pulseFactor(now: number, periodMs: number, amplitude: number): number {
+  return 1 + amplitude * Math.sin((now / periodMs) * Math.PI * 2);
+}
+
+// Clamped 0..1 progress since `bornAt`, used by every fade/ease timer below.
+function progressRatio(
+  bornAt: number,
+  now: number,
+  durationMs: number,
+): number {
+  return Math.min(1, (now - bornAt) / durationMs);
+}
+
+function hasExpired(bornAt: number, now: number, durationMs: number): boolean {
+  return now - bornAt >= durationMs;
+}
+
+// Shared backward-iterate-and-splice pattern for any bornAt-timed collection
+// (floating texts, rings — see call sites in update()).
+function removeExpired<T extends { bornAt: number }>(
+  items: T[],
+  now: number,
+  durationMs: number,
+) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (hasExpired(items[i].bornAt, now, durationMs)) {
+      items.splice(i, 1);
+    }
+  }
 }
 
 // CONFIG values and meanings copied verbatim from spec/03-reference.md §2.
@@ -190,7 +236,23 @@ const BRAZIER_LIGHT_EASE_MS = 600; // ms — ease-in duration for a brazier's li
 const BRAZIER_EMBER_RADIUS = 4; // px — unlit brazier dim ember dot
 const EMBER_COLOR: Rgb = [120, 70, 40];
 const EMBER_ALPHA = 0.6;
+// Precomputed once: this fixed-color fillStyle would otherwise be rebuilt from the same
+// constant every frame for every unlit brazier.
+const EMBER_COLOR_CSS = rgbaCss(EMBER_COLOR, EMBER_ALPHA);
 const BRAZIER_GLOW_RADIUS = 20; // px — lit brazier core glow circle
+// Flicker on the core glow only (spec/02-game-design.md §9 row "brazier flame": normal =
+// flicker, reduced-motion = steady glow). Disabled entirely under reduced motion.
+const BRAZIER_FLICKER_PERIOD_MS = 220;
+const BRAZIER_FLICKER_AMPLITUDE = 0.15;
+
+// reduced-motion pickup ring (spec/02-game-design.md §9): sizes/timing not in
+// spec/03-reference.md CONFIG, chosen here to read clearly as a single pulse.
+const RING_DURATION_MS = 500;
+const RING_START_RADIUS = CRYSTAL_RADIUS;
+const RING_END_RADIUS = 48;
+const RING_LINE_WIDTH = 2;
+// Precomputed once: BURST_COLOR is a fixed constant, no need to re-templatize it per ring.
+const RING_COLOR_CSS = rgbCss(BURST_COLOR);
 
 const FOOTPRINT_PARTICLE_SIZE = 4; // px
 const FOOTPRINT_RISE_SPEED = 14; // px/s — upward drift while fading
@@ -229,6 +291,21 @@ const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
 function GameCanvas() {
   let wrapper: HTMLDivElement | undefined;
   let canvas: HTMLCanvasElement | undefined;
+  // Plain mutable object, not a Signal (spec/01-architecture.md §3.1) — read by the
+  // rAF loop's input merge, written by the D-pad buttons' pointer handlers below.
+  const dpad = { up: false, down: false, left: false, right: false };
+
+  function dpadHandlers(direction: keyof typeof dpad) {
+    const set = (pressed: boolean) => {
+      dpad[direction] = pressed;
+    };
+    return {
+      onPointerDown: () => set(true),
+      onPointerUp: () => set(false),
+      onPointerCancel: () => set(false),
+      onPointerLeave: () => set(false),
+    };
+  }
 
   onMount(() => {
     if (!wrapper || !canvas) return;
@@ -243,7 +320,11 @@ function GameCanvas() {
     const camera = { x: 0, y: 0 };
     const keys = new Set<string>();
     const particles: Particle[] = [];
+    // Kept in sync with the "ambient" particles in `particles` so topUpAmbientParticles
+    // doesn't have to rescan the whole (up to CONFIG.maxParticles) array every frame.
+    let liveAmbientCount = 0;
     const floatingTexts: FloatingText[] = [];
+    const rings: Ring[] = [];
     const lastFlameSpawnAt = new Map<number, number>();
     let lastFootprintSpawnAt = 0;
     let viewWidth = 0;
@@ -293,6 +374,8 @@ function GameCanvas() {
 
     function spawnFootprintParticle(now: number, isMoving: boolean) {
       if (!isMoving) return;
+      // reduced-motion (spec/02-game-design.md §9): footprint particles disabled entirely.
+      if (gameState.reducedMotion) return;
       if (now - lastFootprintSpawnAt < CONFIG.particleSpawnInterval) return;
       lastFootprintSpawnAt = now;
       if (!canSpawnParticle()) return;
@@ -330,6 +413,8 @@ function GameCanvas() {
     }
 
     function spawnFlameParticles(now: number) {
+      // reduced-motion (spec/02-game-design.md §9): flame particles disabled, steady glow only.
+      if (gameState.reducedMotion) return;
       for (const brazier of BRAZIERS) {
         if (!brazier.lit) continue;
         const last = lastFlameSpawnAt.get(brazier.id) ?? 0;
@@ -373,17 +458,27 @@ function GameCanvas() {
       };
     }
 
+    // reduced-motion (spec/02-game-design.md §9): ambient particles disabled. Existing ones
+    // are left to expire naturally (updateParticles below) rather than force-removed.
+    function topUpAmbientParticles(now: number) {
+      if (gameState.reducedMotion) return;
+      while (
+        liveAmbientCount < CONFIG.ambientParticleCount &&
+        canSpawnParticle()
+      ) {
+        particles.push(createAmbientParticle(now));
+        liveAmbientCount++;
+      }
+    }
+
     function updateParticles(dt: number, now: number) {
       const seconds = dt / 1000;
       for (let i = particles.length - 1; i >= 0; i--) {
         const particle = particles[i];
         const age = now - particle.bornAt;
         if (age >= particle.lifetimeMs) {
-          if (particle.kind === "ambient") {
-            particles[i] = createAmbientParticle(now);
-          } else {
-            particles.splice(i, 1);
-          }
+          if (particle.kind === "ambient") liveAmbientCount--;
+          particles.splice(i, 1);
           continue;
         }
         particle.x += particle.vx * seconds;
@@ -392,14 +487,6 @@ function GameCanvas() {
           const decay = Math.exp(-BURST_DRAG_RATE * seconds);
           particle.vx *= decay;
           particle.vy *= decay;
-        }
-      }
-    }
-
-    function updateFloatingTexts(now: number) {
-      for (let i = floatingTexts.length - 1; i >= 0; i--) {
-        if (now - floatingTexts[i].bornAt >= CONFIG.floatingTextDurationMs) {
-          floatingTexts.splice(i, 1);
         }
       }
     }
@@ -417,7 +504,13 @@ function GameCanvas() {
           )
         ) {
           crystal.collected = true;
-          spawnBurst(crystal.x, crystal.y, now);
+          // reduced-motion (spec/02-game-design.md §9): a single expanding ring stroke
+          // replaces the burst particles, keeping the pickup feedback.
+          if (gameState.reducedMotion) {
+            rings.push({ x: crystal.x, y: crystal.y, bornAt: now });
+          } else {
+            spawnBurst(crystal.x, crystal.y, now);
+          }
           floatingTexts.push({
             x: crystal.x,
             y: crystal.y,
@@ -451,10 +544,12 @@ function GameCanvas() {
     function update(dt: number, now: number) {
       let dx = 0;
       let dy = 0;
-      if (keys.has("ArrowUp") || keys.has("KeyW")) dy -= 1;
-      if (keys.has("ArrowDown") || keys.has("KeyS")) dy += 1;
-      if (keys.has("ArrowLeft") || keys.has("KeyA")) dx -= 1;
-      if (keys.has("ArrowRight") || keys.has("KeyD")) dx += 1;
+      // Keyboard and D-pad are OR-merged every frame (spec/02-game-design.md §3) so either
+      // input source produces identical movement.
+      if (keys.has("ArrowUp") || keys.has("KeyW") || dpad.up) dy -= 1;
+      if (keys.has("ArrowDown") || keys.has("KeyS") || dpad.down) dy += 1;
+      if (keys.has("ArrowLeft") || keys.has("KeyA") || dpad.left) dx -= 1;
+      if (keys.has("ArrowRight") || keys.has("KeyD") || dpad.right) dx += 1;
 
       const isMoving = dx !== 0 || dy !== 0;
       if (isMoving) {
@@ -486,8 +581,10 @@ function GameCanvas() {
       updateBraziers(now);
       spawnFootprintParticle(now, isMoving);
       spawnFlameParticles(now);
+      topUpAmbientParticles(now);
       updateParticles(dt, now);
-      updateFloatingTexts(now);
+      removeExpired(floatingTexts, now, CONFIG.floatingTextDurationMs);
+      removeExpired(rings, now, RING_DURATION_MS);
     }
 
     function renderTiles(backgroundColor: string, tileAccentColor: string) {
@@ -511,21 +608,29 @@ function GameCanvas() {
       }
     }
 
-    function renderBraziers() {
+    function renderBraziers(now: number) {
       if (!ctx) return;
       for (const brazier of BRAZIERS) {
         if (!brazier.lit) {
-          ctx.fillStyle = rgbaCss(EMBER_COLOR, EMBER_ALPHA);
+          ctx.fillStyle = EMBER_COLOR_CSS;
           ctx.beginPath();
           ctx.arc(brazier.x, brazier.y, BRAZIER_EMBER_RADIUS, 0, Math.PI * 2);
           ctx.fill();
           continue;
         }
+        // reduced-motion (spec/02-game-design.md §9): steady glow, no flicker.
+        const flicker = gameState.reducedMotion
+          ? 1
+          : pulseFactor(
+              now,
+              BRAZIER_FLICKER_PERIOD_MS,
+              BRAZIER_FLICKER_AMPLITUDE,
+            );
         fillGlow(
           ctx,
           brazier.x,
           brazier.y,
-          BRAZIER_GLOW_RADIUS,
+          BRAZIER_GLOW_RADIUS * flicker,
           FLAME_CORE_COLOR,
         );
       }
@@ -535,13 +640,30 @@ function GameCanvas() {
       if (!ctx) return;
       for (const crystal of CRYSTALS) {
         if (crystal.collected) continue;
-        const bobOffset =
-          Math.sin(
-            (now / CRYSTAL_BOB_PERIOD_MS) * Math.PI * 2 + crystal.phase,
-          ) * CRYSTAL_BOB_AMPLITUDE;
-        const y = crystal.y + bobOffset;
+        // reduced-motion (spec/02-game-design.md §9): bob frozen at its phase position.
+        const bobPhase = gameState.reducedMotion
+          ? crystal.phase
+          : (now / CRYSTAL_BOB_PERIOD_MS) * Math.PI * 2 + crystal.phase;
+        const y = crystal.y + Math.sin(bobPhase) * CRYSTAL_BOB_AMPLITUDE;
         fillGlow(ctx, crystal.x, y, CRYSTAL_RADIUS, CRYSTAL_COLOR);
       }
+    }
+
+    // reduced-motion (spec/02-game-design.md §9) stand-in for the crystal pickup burst.
+    function renderRings(now: number) {
+      if (!ctx) return;
+      for (const ring of rings) {
+        const t = progressRatio(ring.bornAt, now, RING_DURATION_MS);
+        const radius =
+          RING_START_RADIUS + (RING_END_RADIUS - RING_START_RADIUS) * t;
+        ctx.globalAlpha = 1 - t;
+        ctx.strokeStyle = RING_COLOR_CSS;
+        ctx.lineWidth = RING_LINE_WIDTH;
+        ctx.beginPath();
+        ctx.arc(ring.x, ring.y, radius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
     }
 
     function renderParticles(now: number) {
@@ -567,13 +689,16 @@ function GameCanvas() {
       ctx.font = "16px sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = rgbCss(FLOATING_TEXT_COLOR);
+      // reduced-motion (spec/02-game-design.md §9): fades in place, no rise.
+      const rise = gameState.reducedMotion ? 0 : FLOATING_TEXT_RISE_PX;
       for (const text of floatingTexts) {
-        const t = Math.min(
-          1,
-          (now - text.bornAt) / CONFIG.floatingTextDurationMs,
+        const t = progressRatio(
+          text.bornAt,
+          now,
+          CONFIG.floatingTextDurationMs,
         );
         ctx.globalAlpha = 1 - t;
-        ctx.fillText(text.text, text.x, text.y - FLOATING_TEXT_RISE_PX * t);
+        ctx.fillText(text.text, text.x, text.y - rise * t);
       }
       ctx.globalAlpha = 1;
     }
@@ -593,10 +718,10 @@ function GameCanvas() {
 
       lightCtx.globalCompositeOperation = "destination-out";
 
-      const pulse =
-        1 +
-        LIGHT_PULSE_AMPLITUDE *
-          Math.sin((now / LIGHT_PULSE_PERIOD_MS) * Math.PI * 2);
+      // reduced-motion (spec/02-game-design.md §9): fixed radius, no pulse.
+      const pulse = gameState.reducedMotion
+        ? 1
+        : pulseFactor(now, LIGHT_PULSE_PERIOD_MS, LIGHT_PULSE_AMPLITUDE);
       const coreRadius = CONFIG.lightRadius * pulse;
       const outerRadius = coreRadius + CONFIG.lightSoftness;
       punchLightHole(
@@ -609,10 +734,7 @@ function GameCanvas() {
 
       for (const brazier of BRAZIERS) {
         if (!brazier.lit) continue;
-        const easeT = Math.min(
-          1,
-          (now - brazier.litAt) / BRAZIER_LIGHT_EASE_MS,
-        );
+        const easeT = progressRatio(brazier.litAt, now, BRAZIER_LIGHT_EASE_MS);
         const eased = 1 - (1 - easeT) * (1 - easeT); // ease-out quad
         const brazierCoreRadius = CONFIG.brazierLightRadius * eased;
         if (brazierCoreRadius <= 0) continue;
@@ -659,7 +781,8 @@ function GameCanvas() {
       ctx.translate(-camera.x, -camera.y);
       renderTiles(backgroundColor, tileAccentColor);
       renderParticles(now);
-      renderBraziers();
+      renderRings(now);
+      renderBraziers(now);
       renderCrystals(now);
       renderPlayer();
       renderFloatingTexts(now);
@@ -674,10 +797,14 @@ function GameCanvas() {
       const dt = clampDelta(now - lastTime, CONFIG.maxDeltaMs);
       lastTime = now;
       const menuOpen = gameState.isMenuOpen;
-      // Clear held keys while the menu is open so the Dialog's focus trap
-      // can never leave a stuck key that resumes movement once it closes.
-      if (menuOpen) keys.clear();
-      else update(dt, now);
+      // Clear held keys and D-pad flags while the menu is open so the Dialog's focus trap
+      // can never leave a stuck input that resumes movement once it closes.
+      if (menuOpen) {
+        keys.clear();
+        dpad.up = dpad.down = dpad.left = dpad.right = false;
+      } else {
+        update(dt, now);
+      }
       render(now);
     }
 
@@ -689,9 +816,7 @@ function GameCanvas() {
     window.addEventListener("keyup", handleKeyUp);
     window.addEventListener("blur", handleBlur);
     lastTime = performance.now();
-    for (let i = 0; i < CONFIG.ambientParticleCount; i++) {
-      particles.push(createAmbientParticle(lastTime));
-    }
+    topUpAmbientParticles(lastTime);
     rafId = requestAnimationFrame(loop);
 
     onCleanup(() => {
@@ -711,6 +836,40 @@ function GameCanvas() {
         role="img"
         aria-label="A glowing dungeon world. Use arrow keys or WASD to stroll."
       />
+      <div class={styles.dpad}>
+        <button
+          type="button"
+          class={`${styles.dpadButton} ${styles.dpadButtonUp}`}
+          aria-label="Move up"
+          {...dpadHandlers("up")}
+        >
+          <ChevronUp size={24} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class={`${styles.dpadButton} ${styles.dpadButtonLeft}`}
+          aria-label="Move left"
+          {...dpadHandlers("left")}
+        >
+          <ChevronLeft size={24} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class={`${styles.dpadButton} ${styles.dpadButtonRight}`}
+          aria-label="Move right"
+          {...dpadHandlers("right")}
+        >
+          <ChevronRight size={24} aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class={`${styles.dpadButton} ${styles.dpadButtonDown}`}
+          aria-label="Move down"
+          {...dpadHandlers("down")}
+        >
+          <ChevronDown size={24} aria-hidden="true" />
+        </button>
+      </div>
     </div>
   );
 }

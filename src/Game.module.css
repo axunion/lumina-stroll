@@ -93,6 +93,11 @@
 .dialogOverlay {
   composes: dialogLayer;
   background: rgba(0, 0, 0, 0.6);
+  animation: fadeIn 150ms ease-out;
+}
+
+.dialogOverlay[data-closed] {
+  animation: fadeOut 150ms ease-in;
 }
 
 .dialogPositioner {
@@ -111,6 +116,68 @@
   color: var(--colorText);
   padding: 1.5rem;
   font-family: system-ui, sans-serif;
+  animation: dialogIn 150ms ease-out;
+}
+
+.dialogContent[data-closed] {
+  animation: dialogOut 150ms ease-in;
+}
+
+/* Dialog animations disabled via OS setting and via the reducedMotion store toggle
+   (spec/02-game-design.md §9, spec/04-ui.md §6). data-reduced is bound directly on
+   dialogOverlay/dialogContent since Dialog.Portal renders outside appRoot's subtree. */
+@media (prefers-reduced-motion: reduce) {
+  .dialogOverlay,
+  .dialogContent,
+  .dialogOverlay[data-closed],
+  .dialogContent[data-closed] {
+    animation: none;
+  }
+}
+
+.dialogOverlay[data-reduced],
+.dialogContent[data-reduced] {
+  animation: none;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fadeOut {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes dialogOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.95);
+  }
 }
 
 .dialogHeader {
@@ -233,4 +300,57 @@
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* Mobile D-pad (spec/04-ui.md §4): touch-only, hidden on fine-pointer (desktop) devices. */
+.dpad {
+  display: none;
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 10;
+  grid-template-columns: repeat(3, 2.75rem);
+  grid-template-rows: repeat(3, 2.75rem);
+  grid-template-areas:
+    ".    up    ."
+    "left .     right"
+    ".    down  .";
+}
+
+@media (pointer: coarse) {
+  .dpad {
+    display: grid;
+  }
+}
+
+.dpadButton {
+  touch-action: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 0.5rem;
+  background: rgba(220, 245, 255, 0.25);
+  color: var(--colorText);
+  padding: 0;
+}
+
+.dpadButton:active {
+  background: rgba(220, 245, 255, 0.5);
+}
+
+.dpadButtonUp {
+  grid-area: up;
+}
+
+.dpadButtonLeft {
+  grid-area: left;
+}
+
+.dpadButtonRight {
+  grid-area: right;
+}
+
+.dpadButtonDown {
+  grid-area: down;
 }

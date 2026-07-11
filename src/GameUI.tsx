@@ -20,6 +20,12 @@ function currentBiomeName(): string {
   );
 }
 
+// A plain function (not a hoisted const) so each JSX binding re-reads the Signal —
+// GameUI() itself only runs once, so a top-level `const` here would freeze at mount.
+function reducedMotionAttr(): true | undefined {
+  return gameState.reducedMotion || undefined;
+}
+
 function GameUI() {
   return (
     <>
@@ -53,9 +59,15 @@ function GameUI() {
 
       <Dialog.Root open={gameState.isMenuOpen} onOpenChange={setMenuOpen}>
         <Dialog.Portal>
-          <Dialog.Overlay class={styles.dialogOverlay} />
+          <Dialog.Overlay
+            class={styles.dialogOverlay}
+            data-reduced={reducedMotionAttr()}
+          />
           <div class={styles.dialogPositioner}>
-            <Dialog.Content class={styles.dialogContent}>
+            <Dialog.Content
+              class={styles.dialogContent}
+              data-reduced={reducedMotionAttr()}
+            >
               <div class={styles.dialogHeader}>
                 <Dialog.Title class={styles.dialogTitle}>Menu</Dialog.Title>
                 <Dialog.CloseButton
