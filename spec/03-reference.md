@@ -15,6 +15,8 @@ export interface GameState {
   currentBiome: BiomeId
   isMenuOpen: boolean
   reducedMotion: boolean
+  discoveredInscriptionIds: readonly number[]
+  audioMuted: boolean
 }
 
 export type Rgb = readonly [number, number, number]
@@ -28,7 +30,16 @@ export interface Biome {
   ambientParticle: Rgb
   lightTint: Rgb
 }
+
+export interface Inscription {
+  id: number
+  x: number
+  y: number
+  text: string
+}
 ```
+
+`Inscription` を gameStore に置くのは、Journal タブ（GameUI）が詩文の表示に使うため（発見フラグは持たない — 発見状態は `GameState.discoveredInscriptionIds` が正）。
 
 ### 1.2 `GameCanvas.tsx` 内の非リアクティブ型（ローカル定義、export 不要）
 
@@ -67,6 +78,68 @@ interface FloatingText {
   text: string
   bornAt: number
 }
+
+interface Wisp {
+  x: number
+  y: number
+  heading: number // radians; current drift direction, turns smoothly
+  phase: number // radians; per-wisp offset for drift variation
+}
+
+interface GlowPlant {
+  id: number
+  x: number
+  y: number
+}
+```
+
+### 1.3 `src/assets.ts` に置く型（export する）
+
+```ts
+export type SpriteKey =
+  | 'player'
+  | 'crystal'
+  | 'brazierUnlit'
+  | 'brazierLit'
+  | 'tileForest'
+  | 'tileCave'
+  | 'plantForest'
+  | 'plantCave'
+  | 'inscription'
+
+export interface SpriteDef {
+  key: SpriteKey
+  path: string // e.g. '/assets/player.png' (served from public/)
+  drawWidth: number // CSS px on canvas
+  drawHeight: number // CSS px on canvas
+  anchor: 'center' | 'topLeft' | 'bottomCenter'
+}
+
+export type SpriteMap = Partial<Record<SpriteKey, HTMLImageElement>>
+```
+
+### 1.4 `src/persistence.ts` に置く型（export する）
+
+```ts
+export interface SaveDataV1 {
+  version: 1
+  collectedCrystalIds: number[]
+  litBrazierIds: number[]
+  discoveredInscriptionIds: number[]
+  audioMuted: boolean
+}
+
+export interface SaveTotals {
+  crystals: number
+  braziers: number
+  inscriptions: number
+}
+
+export interface StorageLike {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
+}
 ```
 
 ## 2. CONFIG（`GameCanvas.tsx` 冒頭に単一オブジェクトとして定義）
@@ -93,8 +166,23 @@ interface FloatingText {
 | `worldHeight` | `1200` | px | ワールド高さ |
 | `tileSize` | `64` | px | 背景タイルの一辺 |
 | `maxDeltaMs` | `50` | ms | delta time の上限クランプ |
+| `wispCount` | `5` | 体 | 常駐ウィスプの数 |
+| `wispNoticeRadius` | `160` | px | ウィスプがプレイヤーに気づく距離 |
+| `wispFollowSpeed` | `40` | px/s | 追従時のウィスプ速度 |
+| `wispWanderSpeed` | `18` | px/s | 徘徊時のウィスプ速度 |
+| `plantGlowInnerRadius` | `40` | px | 光る草が最大光量になる距離 |
+| `plantGlowOuterRadius` | `140` | px | 光る草の光量が下限に落ちる距離 |
+| `plantGlowFloor` | `0.15` | 0–1 | 光る草の明るさの下限（完全消灯しない） |
+| `inscriptionProximity` | `60` | px | 碑文テキスト表示の距離 |
+| `inscriptionTextDurationMs` | `4000` | ms | 碑文テキストの表示時間 |
 
 各キーには実装時に上表の「意味」を英語コメントとして付ける。
+
+### 2.1 GameUI 定数（`GameUI.tsx` ローカル）
+
+| 定数 | 値 | 単位 | 意味 |
+|---|---|---|---|
+| `RESET_ARMED_DURATION_MS` | `4000` | ms | リセットボタンの armed 状態が自動解除されるまでの時間（`04-ui.md` §3.2） |
 
 ## 3. バイオーム定義とパレット
 
@@ -132,10 +220,17 @@ export const BIOMES: readonly Biome[] = [
 | burst パーティクル | クリスタル本体色 `[140, 235, 255]` |
 | "+1" テキスト | `[220, 245, 255]` |
 | 暗幕 | 黒 `[0, 0, 0]`（alpha は `CONFIG.darknessAlpha`） |
+| 光る草（Forest） | `[150, 230, 150]` |
+| 光る草（Cave） | `[180, 150, 255]` |
+| 碑文の石 | `[120, 130, 160]` |
+| 碑文テキスト | "+1" テキストと同色 `[220, 245, 255]` |
+| ウィスプ | 固有色なし（バイオームブレンド後の `ambientParticle` 色を使う） |
 
 ## 4. ワールドデータ（配置座標）
 
 **決定: エンティティ配置はハードコードされたリテラル配列とする。** シード付き乱数による手続き配置は不採用（理由: 完全な決定性、個体ごとのチューニング可能性、simplest thing that works。要件の "procedural" は素材を使わないレンダリングを指し、配置生成を指さないと解釈）。
+
+**制約: 各エンティティ種の id は 1 から始まる連番を維持する。** セーブの検証（§8）が「id は `1..total` の整数」という規則に依存しているため、歯抜け・飛び番を作らない。
 
 ### 4.1 プレイヤー初期位置
 
@@ -181,14 +276,53 @@ const BRAZIERS: Brazier[] = [
 ]
 ```
 
-### 4.4 導出定数（state にしない）
+### 4.4 光る草（全 12 株: Forest 7 / Cave 5、`GameCanvas.tsx` ローカル）
 
 ```ts
-export const TOTAL_CRYSTALS = 14 // = CRYSTALS.length
-export const TOTAL_BRAZIERS = 6  // = BRAZIERS.length
+const PLANTS: GlowPlant[] = [
+  // Enchanted Forest (x < 2400)
+  { id: 1,  x: 520,  y: 470 },
+  { id: 2,  x: 760,  y: 700 },
+  { id: 3,  x: 980,  y: 940 },
+  { id: 4,  x: 1250, y: 330 },
+  { id: 5,  x: 1560, y: 760 },
+  { id: 6,  x: 1840, y: 520 },
+  { id: 7,  x: 2230, y: 940 },
+  // Crystal Cave (x >= 2400)
+  { id: 8,  x: 2550, y: 860 },
+  { id: 9,  x: 2900, y: 420 },
+  { id: 10, x: 3450, y: 620 },
+  { id: 11, x: 3900, y: 940 },
+  { id: 12, x: 4380, y: 360 },
+]
 ```
 
-HUD の「取得数 / 総数」表示はこの定数を import して使う（`01-architecture.md` §3.1）。実装では `CRYSTALS.length` から導出してよい。
+### 4.5 碑文（全 6 基: Forest 3 / Cave 3、`gameStore.ts` から export）
+
+```ts
+export const INSCRIPTIONS: readonly Inscription[] = [
+  // Enchanted Forest
+  { id: 1, x: 340,  y: 900, text: 'Someone walked here before you, and smiled.' },
+  { id: 2, x: 1150, y: 520, text: 'The dark is not empty. It is resting.' },
+  { id: 3, x: 1980, y: 880, text: 'Slow steps hear more than fast ones.' },
+  // Crystal Cave
+  { id: 4, x: 2600, y: 300, text: 'Where the forest ends, the stars continue underground.' },
+  { id: 5, x: 3500, y: 820, text: 'Every light you kindle remembers you.' },
+  { id: 6, x: 4650, y: 600, text: 'There was never anything to win. Only this.' },
+] as const
+```
+
+id 6 はワールド最深部（右端付近）に置き、踏破のささやかな結びとする。
+
+### 4.6 導出定数（state にしない）
+
+```ts
+export const TOTAL_CRYSTALS = 14      // = CRYSTALS.length
+export const TOTAL_BRAZIERS = 6       // = BRAZIERS.length
+export const TOTAL_INSCRIPTIONS = 6   // = INSCRIPTIONS.length
+```
+
+HUD / Journal の「n / 総数」表示はこの定数を import して使う（`01-architecture.md` §3.1）。実装では配列の `length` から導出してよい。
 
 ## 5. store API（正確な export）
 
@@ -202,29 +336,42 @@ HUD の「取得数 / 総数」表示はこの定数を import して使う（`0
 | `setCurrentBiome` | `(biome: BiomeId) => void` | HUD 表示用バイオーム切替 |
 | `setMenuOpen` | `(open: boolean) => void` | メニュー開閉（= ポーズ） |
 | `setReducedMotion` | `(reduced: boolean) => void` | モーション削減トグル |
-| `BiomeId` / `GameState` / `Rgb` / `Biome` | 型 | §1.1 |
+| `discoverInscription` | `(id: number) => void` | 発見済み id に追加。**既知の id は無視（冪等）** |
+| `setAudioMuted` | `(muted: boolean) => void` | サウンドのミュートトグル |
+| `BiomeId` / `GameState` / `Rgb` / `Biome` / `Inscription` | 型 | §1.1 |
 | `BIOMES` | `readonly Biome[]` | §3 |
-| `TOTAL_CRYSTALS` / `TOTAL_BRAZIERS` | `number` | §4.4 |
+| `INSCRIPTIONS` | `readonly Inscription[]` | §4.5 |
+| `TOTAL_CRYSTALS` / `TOTAL_BRAZIERS` / `TOTAL_INSCRIPTIONS` | `number` | §4.6 |
+| `createGameStore` | `(save: SaveDataV1 | null) => …` | テスト用に export するファクトリ（`06-test-plan.md` §1） |
 
 ### 初期状態
 
+モジュール初期化時に `persistence.initial`（`01-architecture.md` §10）を渡してファクトリを呼ぶ:
+`createRoot(() => createGameStore(persistence.initial))`。
+
 ```ts
-function initialState(): GameState {
+function initialState(save: SaveDataV1 | null): GameState {
   return {
-    crystalsCollected: 0,
-    litBraziersCount: 0,
-    currentBiome: 'enchantedForest',
+    crystalsCollected: save?.collectedCrystalIds.length ?? 0,
+    litBraziersCount: save?.litBrazierIds.length ?? 0,
+    currentBiome: 'enchantedForest', // position is not saved — every stroll starts at the entrance
     isMenuOpen: false,
     // NOTE: wrap in a lambda — passing window.matchMedia unbound loses `this`
     // and throws "Illegal invocation" when called.
     reducedMotion: detectReducedMotion(
       typeof window !== 'undefined' ? (query) => window.matchMedia(query) : undefined,
     ),
+    discoveredInscriptionIds: save?.discoveredInscriptionIds ?? [],
+    audioMuted: save?.audioMuted ?? false,
   }
 }
 ```
 
-## 6. `gameLogic.ts` の関数シグネチャ
+セーブ済み id の妥当性は `parseSave`（§8）が保証するため、ここでは件数を数えるだけでよい。
+
+## 6. 関数シグネチャ
+
+### 6.1 `gameLogic.ts`
 
 ```ts
 export function lerp(a: number, b: number, t: number): number
@@ -238,7 +385,145 @@ export function biomeIdAt(x: number, boundaryX: number): BiomeId
 export function detectReducedMotion(
   matchMediaLike: ((query: string) => { matches: boolean }) | undefined,
 ): boolean // undefined -> false
+export function proximityGlow01(
+  distSqValue: number,
+  innerRadius: number,
+  outerRadius: number,
+): number // 1 within innerRadius, 0 beyond outerRadius, smoothstep in between
+export function equalPowerGains(t: number): { a: number; b: number }
+// clamps t to [0,1]; a = cos(t * PI / 2), b = sin(t * PI / 2); a^2 + b^2 === 1
 ```
 
 - すべて純粋関数。DOM・Canvas・store に依存しない（`Rgb` / `BiomeId` の型 import のみ可）。
 - `detectReducedMotion` は `matchMedia` 互換関数を **引数注入** で受ける（テストで DOM モック不要にするため — `06-test-plan.md`）。
+- `proximityGlow01` は光る草の明るさ計算に使う。呼び出し側で `CONFIG.plantGlowFloor` の下限を適用する:
+  `alpha = CONFIG.plantGlowFloor + (1 - CONFIG.plantGlowFloor) * proximityGlow01(...)`。
+- `equalPowerGains` の `a` が Forest ベッド、`b` が Cave ベッドのゲイン係数（`02-game-design.md` §12）。
+
+### 6.2 `persistence.ts`
+
+```ts
+export function parseSave(json: string | null, totals: SaveTotals): SaveDataV1 | null
+export function serializeSave(save: SaveDataV1): string
+export function createPersistence(storage: StorageLike | undefined, totals: SaveTotals): Persistence
+
+export interface Persistence {
+  readonly initial: SaveDataV1 | null // loaded and validated once at creation
+  markCrystalCollected(id: number): void
+  markBrazierLit(id: number): void
+  markInscriptionDiscovered(id: number): void
+  setAudioMuted(muted: boolean): void
+  clear(): void
+}
+
+export const persistence: Persistence // singleton bound to window.localStorage (undefined if unavailable)
+```
+
+- `parseSave` / `serializeSave` は純粋関数。検証規則は §8。
+- `createPersistence` はセーブスナップショット（mutable なモジュール内オブジェクト）を所有する。各 mutator は冪等で、呼ばれるたびに同期的に `setItem` へ write-through する。`storage` が `undefined` の場合、`initial` は `null`、全 mutator は no-op。
+- `getItem` / `setItem` / `removeItem` の例外（Safari プライベートモード・quota 超過）はすべて握りつぶす（`02-game-design.md` §11 — 絶対にクラッシュしない）。シングルトン生成時の `window.localStorage` への参照自体も try-catch で包む。
+
+### 6.3 `assets.ts`
+
+```ts
+export const SPRITE_DEFS: readonly SpriteDef[] // 9 entries — §7 が正
+export function spriteDrawOrigin(
+  def: SpriteDef,
+  x: number,
+  y: number,
+): { dx: number; dy: number } // pure; anchor-adjusted top-left for drawImage
+export function loadSprites(target: SpriteMap): void
+```
+
+- `spriteDrawOrigin` は純粋関数: `center` → `(x - drawWidth/2, y - drawHeight/2)`、`topLeft` → `(x, y)`、`bottomCenter` → `(x - drawWidth/2, y - drawHeight)`。
+- `loadSprites` は fire-and-forget: 各 `SpriteDef` について `new Image()` → `src = path` → `decode()` 成功時に `target[key] = img`。失敗（404・decode 不能）は握りつぶす（`01-architecture.md` §8）。
+
+### 6.4 `audio.ts`
+
+```ts
+export function init(): void // create AudioContext + beds; call ONLY from a user-gesture handler
+export function setBiomeBlend(t: number): void
+export function setMuted(muted: boolean): void
+export function playCollectChime(): void
+export function playBrazierSwell(): void
+export function playInscriptionBell(): void
+```
+
+- すべて `init()` 前は無音の no-op（`01-architecture.md` §9）。パラメータは §9 が正。DOM 非依存だが Web Audio 依存のためユニットテスト対象外（`06-test-plan.md` §6）。
+
+## 7. スプライトマニフェスト
+
+差し替え可能な全スプライトの正。ファイルは `public/assets/` に置く（Vite が `/assets/…` として静的配信する）。挙動は `02-game-design.md` §10、制作手順は `08-asset-guide.md`。
+
+| key | path | 画像サイズ px | 描画サイズ px | anchor | フォールバック（手続き描画） |
+|---|---|---|---|---|---|
+| `player` | `/assets/player.png` | 80 × 80 | 40 × 40 | `center` | グロー円（`CONFIG.playerRadius`） |
+| `crystal` | `/assets/crystal.png` | 64 × 64 | 32 × 32 | `center` | グロー円（クリスタル色） |
+| `brazierUnlit` | `/assets/brazier-unlit.png` | 96 × 96 | 48 × 48 | `bottomCenter` | 残り火ドット |
+| `brazierLit` | `/assets/brazier-lit.png` | 96 × 96 | 48 × 48 | `bottomCenter` | コアグロー + 炎パーティクル |
+| `tileForest` | `/assets/tile-forest.png` | 128 × 128 | 64 × 64（`CONFIG.tileSize`） | `topLeft` | 市松タイル |
+| `tileCave` | `/assets/tile-cave.png` | 128 × 128 | 64 × 64（`CONFIG.tileSize`） | `topLeft` | 市松タイル |
+| `plantForest` | `/assets/plant-forest.png` | 64 × 64 | 32 × 32 | `bottomCenter` | 小さなグロー円（光る草 Forest 色） |
+| `plantCave` | `/assets/plant-cave.png` | 64 × 64 | 32 × 32 | `bottomCenter` | 小さなグロー円（光る草 Cave 色） |
+| `inscription` | `/assets/inscription.png` | 64 × 96 | 32 × 48 | `bottomCenter` | 石碑の縦長ラウンド矩形（碑文の石色） |
+
+規則:
+
+- **画像サイズは描画サイズの 2 倍（@2x）で用意する。** canvas は CSS px + devicePixelRatio プリスケールで描画されるため、`drawImage` に描画サイズを渡すだけで DPR ≦ 2 の環境で crisp になる。
+- 形式は **PNG・透過アルファ必須**。webp は不採用（決定の記録: AI 画像生成ツールの標準出力とアルファ互換性のため PNG に固定）。
+- ファイル名は上表と完全一致（小文字ケバブケース）。一致しない場合はサイレントにフォールバックする。
+
+## 8. セーブスキーマ
+
+- localStorage キー: `'luminaStroll.save'`
+- 現行バージョン: `1`（`SaveDataV1` — §1.4）
+
+```json
+{
+  "version": 1,
+  "collectedCrystalIds": [1, 3, 9],
+  "litBrazierIds": [1, 4],
+  "discoveredInscriptionIds": [2],
+  "audioMuted": false
+}
+```
+
+`parseSave(json, totals)` の検証規則（上から順に適用）:
+
+1. `json` が `null`、または `JSON.parse` が throw → `null`（新規開始）
+2. パース結果がオブジェクトでない、または `version !== 1` → `null`
+3. 3 つの id フィールドのいずれかが配列でない → `null`
+4. 各 id 配列: 「`1..total`（対応する `SaveTotals` の値）の整数」以外の要素は **捨てる**（配列全体は生かす）。重複も捨てる
+5. `audioMuted` が boolean でなければ `false` に落とす
+
+破損時にエラーを表示・記録しない（`02-game-design.md` §11 — 黙って新規開始）。
+
+## 9. オーディオパラメータ
+
+Web Audio ノードグラフの正。挙動は `02-game-design.md` §12。実装時のチューニングは許可するが、**変更した値は必ず本表に書き戻す**（「実装時はここからコピー」の原則を保つ）。
+
+### 9.1 共通
+
+| キー | 値 | 意味 |
+|---|---|---|
+| マスターゲイン | `0.25` | 全体音量（控えめに固定。音量スライダーは作らない） |
+| ミュートランプ | `setTargetAtTime(0, now, 0.05)` | ミュート切替時のゲインランプ（クリックノイズ防止） |
+| クロスフェード | `equalPowerGains(t)` を `setTargetAtTime(gain, now, 0.3)` で適用 | `t` は `biomeBlendAt` と同一。スロットルは audio 内部: 前回適用値から変化が `0.01` 未満なら何もしない（呼び出し側は毎フレーム呼んでよい — `01-architecture.md` §9） |
+
+### 9.2 アンビエントベッド
+
+| ベッド | 構成 | パラメータ |
+|---|---|---|
+| Forest ドローン | sawtooth → lowpass | 55 Hz / カットオフ 220 Hz / ゲイン 0.10 |
+| Forest 葉ずれ | ホワイトノイズ（2 秒ループバッファ） → bandpass | 中心 800 Hz / Q 0.8 / ゲイン 0.04 |
+| Forest ゆらぎ | ドローンゲインへの LFO | 0.05 Hz / 深さ ±20% |
+| Cave ドローン | sine × 2（完全五度） | 41 Hz + 61.5 Hz / ゲイン 0.12 |
+| Cave 雫 | sine の短いプラック（880 → 440 Hz を 0.3 秒で exp ランプ） | 発生間隔 7–15 秒の一様乱数 / ゲイン 0.08 |
+
+### 9.3 ワンショット
+
+| イベント | 波形 | パラメータ |
+|---|---|---|
+| クリスタル取得チャイム | sine | 660 / 880 / 990 Hz から乱択、attack 5 ms、release 600 ms、ゲイン 0.15 |
+| ブレイジャー点灯スウェル | sine | 110 Hz、1.2 秒かけてゲイン 0 → 0.2 → 0 |
+| 碑文発見ベル | triangle | 528 Hz、減衰 2 秒、ゲイン 0.12 |

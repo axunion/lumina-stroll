@@ -45,7 +45,7 @@ export const BIOMES: readonly Biome[] = [
   },
 ] as const;
 
-// Derived constants, not state (spec/03-reference.md §4.4).
+// Derived constants, not state (spec/03-reference.md §4.6).
 export const TOTAL_CRYSTALS = 14; // = CRYSTALS.length
 export const TOTAL_BRAZIERS = 6; // = BRAZIERS.length
 

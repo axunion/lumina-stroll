@@ -8,24 +8,28 @@ every implementation decision. Do not duplicate its content here or in code — 
 - The authority map lives in `spec/00-overview.md` §6. In short: architecture decisions →
   `01-architecture.md`, behavior → `02-game-design.md`, **all numbers/types/data** →
   `03-reference.md`, UI structure and class names → `04-ui.md`, implementation order →
-  `05-roadmap.md`, tests → `06-test-plan.md`, final QA → `07-verification-checklist.md`.
+  `05-roadmap.md`, tests → `06-test-plan.md`, final QA → `07-verification-checklist.md`,
+  asset production guidance (non-runtime) → `08-asset-guide.md`.
 - On conflict: numbers, types, and coordinates — `03-reference.md` wins. Behavior
   descriptions — `02-game-design.md` wins.
 - Numeric values are copied from `03-reference.md` only. Never restate values in other
-  files, comments, or docs; refer to them by key (e.g. `CONFIG.playerSpeed`).
+  files, comments, or docs; refer to them by key (e.g. `CONFIG.playerSpeed`). Declared
+  exception: `08-asset-guide.md` mirrors the sprite manifest sizes and palette hex values
+  so its briefs are copy-pasteable prompts; `03-reference.md` still wins on mismatch.
 
 ## Non-requirements (never implement)
 
 - `spec/00-overview.md` §3: no combat, enemies, damage, timers, game-over, score pressure,
   or obstacles.
-- `spec/00-overview.md` §7 (out of scope): no localStorage persistence, no audio, no third
-  biome, no gamepad support. Also do NOT lay groundwork for these (abstractions, optional
+- `spec/00-overview.md` §7 (out of scope): no third biome, no gamepad support, no sprite
+  animation frames / atlases, no audio asset files (sound is Web Audio synthesis only), no
+  player-position saving. Also do NOT lay groundwork for these (abstractions, optional
   parameters, hooks) — YAGNI is a hard rule here.
 
 ## Milestone workflow
 
-- Implement in the order of `spec/05-roadmap.md` (M0 → M7). Each milestone's verification
-  must pass before starting the next.
+- Implement in the order of `spec/05-roadmap.md`. M0–M7 are done; remaining work is
+  M8 → M13. Each milestone's verification must pass before starting the next.
 - Verification commands: `pnpm check` (biome + tsc), `pnpm test` (vitest), `pnpm dev`,
   `pnpm build && pnpm preview`.
 
