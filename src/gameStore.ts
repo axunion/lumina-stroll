@@ -1,6 +1,7 @@
 import { createRoot } from "solid-js";
 import { createStore } from "solid-js/store";
 import { detectReducedMotion } from "./gameLogic";
+import { persistence, type SaveDataV1 } from "./persistence";
 
 export type BiomeId = "enchantedForest" | "crystalCave";
 
@@ -10,6 +11,8 @@ export interface GameState {
   currentBiome: BiomeId;
   isMenuOpen: boolean;
   reducedMotion: boolean;
+  discoveredInscriptionIds: readonly number[];
+  audioMuted: boolean;
 }
 
 export type Rgb = readonly [number, number, number];
@@ -49,11 +52,11 @@ export const BIOMES: readonly Biome[] = [
 export const TOTAL_CRYSTALS = 14; // = CRYSTALS.length
 export const TOTAL_BRAZIERS = 6; // = BRAZIERS.length
 
-function initialState(): GameState {
+function initialState(save: SaveDataV1 | null): GameState {
   return {
-    crystalsCollected: 0,
-    litBraziersCount: 0,
-    currentBiome: "enchantedForest",
+    crystalsCollected: save?.collectedCrystalIds.length ?? 0,
+    litBraziersCount: save?.litBrazierIds.length ?? 0,
+    currentBiome: "enchantedForest", // position is not saved — every stroll starts at the entrance
     isMenuOpen: false,
     // NOTE: wrap in a lambda — passing window.matchMedia unbound loses `this`
     // and throws "Illegal invocation" when called.
@@ -62,12 +65,14 @@ function initialState(): GameState {
         ? (query) => window.matchMedia(query)
         : undefined,
     ),
+    discoveredInscriptionIds: save?.discoveredInscriptionIds ?? [],
+    audioMuted: save?.audioMuted ?? false,
   };
 }
 
 // Exported so tests can create isolated instances (spec/06-test-plan.md §1).
-export function createGameStore() {
-  const [state, setState] = createStore<GameState>(initialState());
+export function createGameStore(save: SaveDataV1 | null) {
+  const [state, setState] = createStore<GameState>(initialState(save));
   return {
     gameState: state, // consumers must not receive setState
     collectCrystal: () => setState("crystalsCollected", (n) => n + 1),
@@ -75,6 +80,11 @@ export function createGameStore() {
     setCurrentBiome: (biome: BiomeId) => setState("currentBiome", biome),
     setMenuOpen: (open: boolean) => setState("isMenuOpen", open),
     setReducedMotion: (reduced: boolean) => setState("reducedMotion", reduced),
+    discoverInscription: (id: number) =>
+      setState("discoveredInscriptionIds", (ids) =>
+        ids.includes(id) ? ids : [...ids, id],
+      ),
+    setAudioMuted: (muted: boolean) => setState("audioMuted", muted),
   };
 }
 
@@ -85,4 +95,6 @@ export const {
   setCurrentBiome,
   setMenuOpen,
   setReducedMotion,
-} = createRoot(createGameStore);
+  discoverInscription,
+  setAudioMuted,
+} = createRoot(() => createGameStore(persistence.initial));

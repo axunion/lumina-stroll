@@ -26,6 +26,7 @@ import {
   lightBrazier,
   setCurrentBiome,
 } from "./gameStore";
+import { persistence, type SaveDataV1 } from "./persistence";
 
 // Lookup by key so render functions can fetch a sprite's draw size/anchor in O(1)
 // (spec/03-reference.md §7 — SPRITE_DEFS is the single manifest, this is just an index of it).
@@ -221,6 +222,26 @@ const BRAZIERS: Brazier[] = [
   { id: 6, x: 4150, y: 800, lit: false, litAt: 0 },
 ];
 
+// Applies a loaded save's collected/lit ids to the world arrays (spec/01-architecture.md
+// §10). Restored braziers skip the light-radius ease-in entirely (spec/02-game-design.md
+// §11) by backdating litAt far enough that progressRatio always reads as complete.
+function restoreProgress(save: SaveDataV1 | null) {
+  if (!save) return;
+  const collectedIds = new Set(save.collectedCrystalIds);
+  const litIds = new Set(save.litBrazierIds);
+  for (const crystal of CRYSTALS) {
+    if (collectedIds.has(crystal.id)) {
+      crystal.collected = true;
+    }
+  }
+  for (const brazier of BRAZIERS) {
+    if (litIds.has(brazier.id)) {
+      brazier.lit = true;
+      brazier.litAt = -Infinity;
+    }
+  }
+}
+
 // Entity colors (spec/03-reference.md §3).
 const CRYSTAL_COLOR: Rgb = [140, 235, 255];
 const FLAME_CORE_COLOR: Rgb = [150, 170, 255];
@@ -328,6 +349,8 @@ function GameCanvas() {
     const lightCanvas = document.createElement("canvas");
     const lightCtx = lightCanvas.getContext("2d");
     if (!lightCtx) return;
+
+    restoreProgress(persistence.initial);
 
     const player = { x: PLAYER_SPAWN.x, y: PLAYER_SPAWN.y };
     const camera = { x: 0, y: 0 };
@@ -535,6 +558,7 @@ function GameCanvas() {
             bornAt: now,
           });
           collectCrystal();
+          persistence.markCrystalCollected(crystal.id);
         }
       }
     }
@@ -554,6 +578,7 @@ function GameCanvas() {
           brazier.lit = true;
           brazier.litAt = now;
           lightBrazier();
+          persistence.markBrazierLit(brazier.id);
         }
       }
     }

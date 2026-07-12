@@ -3,7 +3,7 @@ import Flame from "lucide-solid/icons/flame";
 import Settings from "lucide-solid/icons/settings";
 import Sparkles from "lucide-solid/icons/sparkles";
 import X from "lucide-solid/icons/x";
-import { For } from "solid-js";
+import { createSignal, For, onCleanup } from "solid-js";
 import styles from "./Game.module.css";
 import {
   BIOMES,
@@ -13,6 +13,10 @@ import {
   TOTAL_BRAZIERS,
   TOTAL_CRYSTALS,
 } from "./gameStore";
+import { persistence } from "./persistence";
+
+// GameUI.tsx-local constant (spec/03-reference.md §2.1).
+const RESET_ARMED_DURATION_MS = 4000; // ms until the armed reset button auto-disarms
 
 function currentBiomeName(): string {
   return (
@@ -27,6 +31,27 @@ function reducedMotionAttr(): true | undefined {
 }
 
 function GameUI() {
+  // Component-local Signal, not store state (spec/04-ui.md §3.2 — the armed state is
+  // transient UI, outside the store's fixed 7-field contract).
+  const [resetArmed, setResetArmed] = createSignal(false);
+  let resetArmedTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function handleResetClick() {
+    if (resetArmed()) {
+      clearTimeout(resetArmedTimer);
+      persistence.clear();
+      location.reload();
+      return;
+    }
+    setResetArmed(true);
+    resetArmedTimer = setTimeout(
+      () => setResetArmed(false),
+      RESET_ARMED_DURATION_MS,
+    );
+  }
+
+  onCleanup(() => clearTimeout(resetArmedTimer));
+
   return (
     <>
       <div class={styles.hud}>
@@ -131,6 +156,21 @@ function GameUI() {
                     Walk with arrow keys or WASD. Touch crystals to collect
                     them. Warm braziers light as you pass.
                   </p>
+                  <button
+                    type="button"
+                    class={
+                      resetArmed()
+                        ? `${styles.resetButton} ${styles.resetButtonArmed}`
+                        : styles.resetButton
+                    }
+                    onClick={handleResetClick}
+                  >
+                    <span aria-live="polite">
+                      {resetArmed()
+                        ? "Press again — your journey will start over"
+                        : "Begin a new stroll"}
+                    </span>
+                  </button>
                 </Tabs.Content>
               </Tabs.Root>
             </Dialog.Content>
