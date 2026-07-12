@@ -3,6 +3,13 @@ import ChevronLeft from "lucide-solid/icons/chevron-left";
 import ChevronRight from "lucide-solid/icons/chevron-right";
 import ChevronUp from "lucide-solid/icons/chevron-up";
 import { onCleanup, onMount } from "solid-js";
+import {
+  drawSprite,
+  loadSprites,
+  SPRITE_DEFS,
+  type SpriteDef,
+  type SpriteMap,
+} from "./assets";
 import styles from "./Game.module.css";
 import {
   biomeBlendAt,
@@ -19,6 +26,12 @@ import {
   lightBrazier,
   setCurrentBiome,
 } from "./gameStore";
+
+// Lookup by key so render functions can fetch a sprite's draw size/anchor in O(1)
+// (spec/03-reference.md §7 — SPRITE_DEFS is the single manifest, this is just an index of it).
+const SPRITE_DEFS_BY_KEY = Object.fromEntries(
+  SPRITE_DEFS.map((def) => [def.key, def]),
+) as Record<SpriteDef["key"], SpriteDef>;
 
 // GameCanvas.tsx-local, non-reactive types (spec/03-reference.md §1.2).
 interface Crystal {
@@ -332,6 +345,10 @@ function GameCanvas() {
     let lastTime = 0;
     let rafId = 0;
     let previousBiome = biomeIdAt(PLAYER_SPAWN.x, CONFIG.biomeBoundaryX);
+    // Plain module-local object, not a Signal (spec/01-architecture.md §3.1). Populated
+    // progressively as loadSprites resolves each image; render functions fall back to
+    // procedural drawing until a given key's entry appears.
+    const sprites: SpriteMap = {};
 
     function handleResize() {
       if (!wrapper || !canvas || !ctx || !lightCtx) return;
@@ -594,6 +611,34 @@ function GameCanvas() {
       const startRow = Math.floor(camera.y / CONFIG.tileSize);
       const endRow = Math.ceil((camera.y + viewHeight) / CONFIG.tileSize);
 
+      // Tiles are all-or-nothing (spec/02-game-design.md §10): both textures must be
+      // present, otherwise the whole grid falls back to the procedural checkerboard.
+      const forestTile = sprites.tileForest;
+      const caveTile = sprites.tileCave;
+      if (forestTile && caveTile) {
+        const forestDef = SPRITE_DEFS_BY_KEY.tileForest;
+        const caveDef = SPRITE_DEFS_BY_KEY.tileCave;
+        for (let row = startRow; row < endRow; row++) {
+          for (let col = startCol; col < endCol; col++) {
+            const tileX = col * CONFIG.tileSize;
+            const tileY = row * CONFIG.tileSize;
+            drawSprite(ctx, forestTile, forestDef, tileX, tileY);
+            // Cross-fade band across the biome boundary, same coefficient as the color lerp.
+            const blend = biomeBlendAt(
+              tileX,
+              CONFIG.biomeBoundaryX,
+              CONFIG.biomeBlendWidth,
+            );
+            if (blend > 0) {
+              ctx.globalAlpha = blend;
+              drawSprite(ctx, caveTile, caveDef, tileX, tileY);
+              ctx.globalAlpha = 1;
+            }
+          }
+        }
+        return;
+      }
+
       for (let row = startRow; row < endRow; row++) {
         for (let col = startCol; col < endCol; col++) {
           ctx.fillStyle =
@@ -610,15 +655,30 @@ function GameCanvas() {
 
     function renderBraziers(now: number) {
       if (!ctx) return;
+      const unlitSprite = sprites.brazierUnlit;
+      const litSprite = sprites.brazierLit;
       for (const brazier of BRAZIERS) {
         if (!brazier.lit) {
-          ctx.fillStyle = EMBER_COLOR_CSS;
-          ctx.beginPath();
-          ctx.arc(brazier.x, brazier.y, BRAZIER_EMBER_RADIUS, 0, Math.PI * 2);
-          ctx.fill();
+          // Unlit is the one halo exception (spec/02-game-design.md §10): the sprite is
+          // drawn as-is with no added glow, its dimness is the asset's own job.
+          if (unlitSprite) {
+            drawSprite(
+              ctx,
+              unlitSprite,
+              SPRITE_DEFS_BY_KEY.brazierUnlit,
+              brazier.x,
+              brazier.y,
+            );
+          } else {
+            ctx.fillStyle = EMBER_COLOR_CSS;
+            ctx.beginPath();
+            ctx.arc(brazier.x, brazier.y, BRAZIER_EMBER_RADIUS, 0, Math.PI * 2);
+            ctx.fill();
+          }
           continue;
         }
-        // reduced-motion (spec/02-game-design.md §9): steady glow, no flicker.
+        // reduced-motion (spec/02-game-design.md §9): steady glow, no flicker. Flicker
+        // applies to the glow radius only — the sprite itself never scales (§10).
         const flicker = gameState.reducedMotion
           ? 1
           : pulseFactor(
@@ -633,11 +693,22 @@ function GameCanvas() {
           BRAZIER_GLOW_RADIUS * flicker,
           FLAME_CORE_COLOR,
         );
+        // Halo maintained behind the sprite (spec/02-game-design.md §10).
+        if (litSprite) {
+          drawSprite(
+            ctx,
+            litSprite,
+            SPRITE_DEFS_BY_KEY.brazierLit,
+            brazier.x,
+            brazier.y,
+          );
+        }
       }
     }
 
     function renderCrystals(now: number) {
       if (!ctx) return;
+      const sprite = sprites.crystal;
       for (const crystal of CRYSTALS) {
         if (crystal.collected) continue;
         // reduced-motion (spec/02-game-design.md §9): bob frozen at its phase position.
@@ -645,7 +716,11 @@ function GameCanvas() {
           ? crystal.phase
           : (now / CRYSTAL_BOB_PERIOD_MS) * Math.PI * 2 + crystal.phase;
         const y = crystal.y + Math.sin(bobPhase) * CRYSTAL_BOB_AMPLITUDE;
+        // Halo maintained behind the sprite (spec/02-game-design.md §10).
         fillGlow(ctx, crystal.x, y, CRYSTAL_RADIUS, CRYSTAL_COLOR);
+        if (sprite) {
+          drawSprite(ctx, sprite, SPRITE_DEFS_BY_KEY.crystal, crystal.x, y);
+        }
       }
     }
 
@@ -705,7 +780,12 @@ function GameCanvas() {
 
     function renderPlayer() {
       if (!ctx) return;
+      // Halo maintained behind the sprite (spec/02-game-design.md §10).
       fillGlow(ctx, player.x, player.y, CONFIG.playerRadius, PLAYER_COLOR);
+      const sprite = sprites.player;
+      if (sprite) {
+        drawSprite(ctx, sprite, SPRITE_DEFS_BY_KEY.player, player.x, player.y);
+      }
     }
 
     // Darkens the screen and punches soft holes around light sources (spec/02-game-design.md §4).
@@ -808,6 +888,7 @@ function GameCanvas() {
       render(now);
     }
 
+    loadSprites(sprites);
     handleResize();
     camera.x = updateCameraAxis(player.x, viewWidth, CONFIG.worldWidth);
     camera.y = updateCameraAxis(player.y, viewHeight, CONFIG.worldHeight);
