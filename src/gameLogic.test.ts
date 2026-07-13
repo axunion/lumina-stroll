@@ -9,6 +9,7 @@ import {
   isWithinRadius,
   lerp,
   lerpColor,
+  proximityGlow01,
   smoothstep01,
 } from "./gameLogic";
 import type { Rgb } from "./gameStore";
@@ -129,5 +130,29 @@ describe("equalPowerGains", () => {
   it("clamps out-of-range t to [0,1]", () => {
     expect(equalPowerGains(-1)).toEqual(equalPowerGains(0));
     expect(equalPowerGains(2)).toEqual(equalPowerGains(1));
+  });
+});
+
+describe("proximityGlow01", () => {
+  it("returns 1 at or within the inner radius", () => {
+    expect(proximityGlow01(0, 40, 140)).toBe(1);
+    expect(proximityGlow01(40 * 40, 40, 140)).toBe(1);
+  });
+
+  it("returns 0 at or beyond the outer radius", () => {
+    expect(proximityGlow01(140 * 140, 40, 140)).toBe(0);
+    expect(proximityGlow01(200 * 200, 40, 140)).toBe(0);
+  });
+
+  it("decreases monotonically between the inner and outer radius", () => {
+    const distances = [60, 80, 100, 120];
+    const values = distances.map((d) => proximityGlow01(d * d, 40, 140));
+    for (let i = 0; i < values.length; i++) {
+      expect(values[i]).toBeGreaterThan(0);
+      expect(values[i]).toBeLessThan(1);
+    }
+    for (let i = 1; i < values.length; i++) {
+      expect(values[i]).toBeLessThan(values[i - 1]);
+    }
   });
 });

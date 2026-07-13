@@ -16,8 +16,10 @@ import {
   biomeBlendAt,
   biomeIdAt,
   clampDelta,
+  distSq,
   isWithinRadius,
   lerpColor,
+  proximityGlow01,
 } from "./gameLogic";
 import type { Rgb } from "./gameStore";
 import {
@@ -69,6 +71,19 @@ interface FloatingText {
   y: number;
   text: string;
   bornAt: number;
+}
+
+interface Wisp {
+  x: number;
+  y: number;
+  heading: number; // radians; current drift direction, turns smoothly
+  phase: number; // radians; per-wisp offset for drift variation
+}
+
+interface GlowPlant {
+  id: number;
+  x: number;
+  y: number;
 }
 
 // reduced-motion stand-in for the crystal pickup burst (spec/02-game-design.md §9):
@@ -187,6 +202,13 @@ const CONFIG = {
   worldHeight: 1200, // px — world height
   tileSize: 64, // px — background tile edge length
   maxDeltaMs: 50, // ms — delta time clamp ceiling
+  wispCount: 5, // count — resident wisp count
+  wispNoticeRadius: 160, // px — distance at which a wisp notices the player
+  wispFollowSpeed: 40, // px/s — wisp speed while following
+  wispWanderSpeed: 18, // px/s — wisp speed while wandering
+  plantGlowInnerRadius: 40, // px — distance within which a glow plant is at max brightness
+  plantGlowOuterRadius: 140, // px — distance beyond which a glow plant's brightness bottoms out
+  plantGlowFloor: 0.15, // 0-1 — glow plant's minimum brightness (never fully dark)
 } as const;
 
 const PLAYER_SPAWN = { x: 240, y: 600 };
@@ -223,6 +245,23 @@ const BRAZIERS: Brazier[] = [
   { id: 6, x: 4150, y: 800, lit: false, litAt: 0 },
 ];
 
+const PLANTS: GlowPlant[] = [
+  // Enchanted Forest (x < 2400)
+  { id: 1, x: 520, y: 470 },
+  { id: 2, x: 760, y: 700 },
+  { id: 3, x: 980, y: 940 },
+  { id: 4, x: 1250, y: 330 },
+  { id: 5, x: 1560, y: 760 },
+  { id: 6, x: 1840, y: 520 },
+  { id: 7, x: 2230, y: 940 },
+  // Crystal Cave (x >= 2400)
+  { id: 8, x: 2550, y: 860 },
+  { id: 9, x: 2900, y: 420 },
+  { id: 10, x: 3450, y: 620 },
+  { id: 11, x: 3900, y: 940 },
+  { id: 12, x: 4380, y: 360 },
+];
+
 // Applies a loaded save's collected/lit ids to the world arrays (spec/01-architecture.md
 // §10). Restored braziers skip the light-radius ease-in entirely (spec/02-game-design.md
 // §11) by backdating litAt far enough that progressRatio always reads as complete.
@@ -243,6 +282,30 @@ function restoreProgress(save: SaveDataV1 | null) {
   }
 }
 
+// Wisps have no spec/03-reference.md placement list (unlike crystals/braziers/plants) —
+// only CONFIG.wispCount is specified, so starting positions are randomized at mount,
+// consistent with how ambient particles are spawned (spec/02-game-design.md §13.1).
+function createWisps(count: number): Wisp[] {
+  const wisps: Wisp[] = [];
+  for (let i = 0; i < count; i++) {
+    wisps.push({
+      x: Math.random() * CONFIG.worldWidth,
+      y: Math.random() * CONFIG.worldHeight,
+      heading: Math.random() * Math.PI * 2,
+      phase: Math.random() * Math.PI * 2,
+    });
+  }
+  return wisps;
+}
+
+const TWO_PI = Math.PI * 2;
+
+// Shortest-path angle difference, normalized to [-PI, PI].
+function angleDiff(from: number, to: number): number {
+  const wrapped = (((to - from + Math.PI) % TWO_PI) + TWO_PI) % TWO_PI;
+  return wrapped - Math.PI;
+}
+
 // Entity colors (spec/03-reference.md §3).
 const CRYSTAL_COLOR: Rgb = [140, 235, 255];
 const FLAME_CORE_COLOR: Rgb = [150, 170, 255];
@@ -252,6 +315,8 @@ const PLAYER_COLOR: Rgb = [255, 240, 200];
 const FOOTPRINT_COLOR: Rgb = PLAYER_COLOR;
 const BURST_COLOR: Rgb = CRYSTAL_COLOR;
 const FLOATING_TEXT_COLOR: Rgb = [220, 245, 255];
+const PLANT_COLOR_FOREST: Rgb = [150, 230, 150];
+const PLANT_COLOR_CAVE: Rgb = [180, 150, 255];
 
 // Implementation choice: spec/02-game-design.md §4 only specifies "sine, ±4%, slow" for
 // the player light pulse — no period is given in spec/03-reference.md.
@@ -310,6 +375,23 @@ const AMBIENT_DRIFT_SPEED = 12; // px/s
 
 const FLOATING_TEXT_RISE_PX = 40; // px risen over CONFIG.floatingTextDurationMs
 
+// Implementation choices below: spec/02-game-design.md §13.1 describes wisp drift and
+// follow qualitatively only ("no sudden movement") — the exact wander shape and turn
+// rate are not present in spec/03-reference.md CONFIG and are chosen here.
+const WISP_RADIUS = 6; // px — wisp glow radius
+// Stand-off distance kept while following, so a noticed wisp hovers near the player
+// instead of converging onto them (spec/02-game-design.md §13.1: "付かず離れず").
+const WISP_HOVER_RADIUS = 40; // px
+// Max heading change per second, applied whether wandering or following, so the
+// wander-to-follow transition itself never produces a sudden turn either.
+const WISP_TURN_RATE_RAD_PER_SEC = 1.2;
+// While wandering, the target heading itself revolves slowly and continuously (offset
+// per-wisp by `phase`) rather than jumping between random targets — this is what makes
+// the drift "turn smoothly" by construction, with no discrete decision points.
+const WISP_WANDER_ANGULAR_SPEED_RAD_PER_SEC = 0.5;
+
+const PLANT_GLOW_RADIUS = 8; // px — glow plant procedural glow radius
+
 const MOVE_KEYS = new Set([
   "ArrowUp",
   "ArrowDown",
@@ -362,6 +444,7 @@ function GameCanvas() {
     let liveAmbientCount = 0;
     const floatingTexts: FloatingText[] = [];
     const rings: Ring[] = [];
+    const wisps = createWisps(CONFIG.wispCount);
     const lastFlameSpawnAt = new Map<number, number>();
     let lastFootprintSpawnAt = 0;
     let viewWidth = 0;
@@ -600,6 +683,42 @@ function GameCanvas() {
       }
     }
 
+    // reduced-motion (spec/02-game-design.md §9): wisps are disabled entirely — update and
+    // render both stop, same treatment as ambient particles.
+    function updateWisps(dt: number, now: number) {
+      if (gameState.reducedMotion) return;
+      const seconds = dt / 1000;
+      const maxTurn = WISP_TURN_RATE_RAD_PER_SEC * seconds;
+      for (const wisp of wisps) {
+        const distanceSq = distSq(player.x, player.y, wisp.x, wisp.y);
+        // "付かず離れず" (spec/02-game-design.md §13.1): a noticed wisp heads straight at the
+        // player only outside the hover distance; once within it, it stops closing the gap
+        // and drifts locally instead of landing on the player.
+        const closingIn =
+          distanceSq > WISP_HOVER_RADIUS * WISP_HOVER_RADIUS &&
+          distanceSq <= CONFIG.wispNoticeRadius * CONFIG.wispNoticeRadius;
+        const desiredHeading = closingIn
+          ? Math.atan2(player.y - wisp.y, player.x - wisp.x)
+          : wisp.phase + (now / 1000) * WISP_WANDER_ANGULAR_SPEED_RAD_PER_SEC;
+        const diff = angleDiff(wisp.heading, desiredHeading);
+        wisp.heading +=
+          Math.abs(diff) < maxTurn ? diff : Math.sign(diff) * maxTurn;
+        const speed = closingIn
+          ? CONFIG.wispFollowSpeed
+          : CONFIG.wispWanderSpeed;
+        wisp.x += Math.cos(wisp.heading) * speed * seconds;
+        wisp.y += Math.sin(wisp.heading) * speed * seconds;
+        wisp.x = Math.min(
+          Math.max(wisp.x, WISP_RADIUS),
+          CONFIG.worldWidth - WISP_RADIUS,
+        );
+        wisp.y = Math.min(
+          Math.max(wisp.y, WISP_RADIUS),
+          CONFIG.worldHeight - WISP_RADIUS,
+        );
+      }
+    }
+
     function update(dt: number, now: number) {
       let dx = 0;
       let dy = 0;
@@ -646,6 +765,7 @@ function GameCanvas() {
 
       updateCrystals(now);
       updateBraziers(now);
+      updateWisps(dt, now);
       spawnFootprintParticle(now, isMoving);
       spawnFlameParticles(now);
       topUpAmbientParticles(now);
@@ -771,6 +891,61 @@ function GameCanvas() {
         if (sprite) {
           drawSprite(ctx, sprite, SPRITE_DEFS_BY_KEY.crystal, crystal.x, y);
         }
+      }
+    }
+
+    // Brightness scales with player proximity (spec/02-game-design.md §13.2); stays fully
+    // active under reduced-motion (§9 — a position-dependent state, not an animation).
+    // Halo maintained behind the sprite: brightness is carried by the halo's alpha only,
+    // same precedent as the brazier flicker (auxiliary property changes, sprite stays put).
+    function renderPlants() {
+      if (!ctx) return;
+      for (const plant of PLANTS) {
+        const isForest =
+          biomeIdAt(plant.x, CONFIG.biomeBoundaryX) === "enchantedForest";
+        const color = isForest ? PLANT_COLOR_FOREST : PLANT_COLOR_CAVE;
+        const spriteKey = isForest ? "plantForest" : "plantCave";
+        const brightness =
+          CONFIG.plantGlowFloor +
+          (1 - CONFIG.plantGlowFloor) *
+            proximityGlow01(
+              distSq(player.x, player.y, plant.x, plant.y),
+              CONFIG.plantGlowInnerRadius,
+              CONFIG.plantGlowOuterRadius,
+            );
+        ctx.globalAlpha = brightness;
+        fillGlow(ctx, plant.x, plant.y, PLANT_GLOW_RADIUS, color);
+        ctx.globalAlpha = 1;
+        const sprite = sprites[spriteKey];
+        if (sprite) {
+          drawSprite(
+            ctx,
+            sprite,
+            SPRITE_DEFS_BY_KEY[spriteKey],
+            plant.x,
+            plant.y,
+          );
+        }
+      }
+    }
+
+    // Always procedural — wisps are sprite-exempt (spec/02-game-design.md §10). reduced-
+    // motion (§9): disabled entirely, same as ambient particles (update already skipped).
+    function renderWisps() {
+      if (!ctx) return;
+      if (gameState.reducedMotion) return;
+      for (const wisp of wisps) {
+        const blend = biomeBlendAt(
+          wisp.x,
+          CONFIG.biomeBoundaryX,
+          CONFIG.biomeBlendWidth,
+        );
+        const color = lerpColor(
+          BIOMES[0].ambientParticle,
+          BIOMES[1].ambientParticle,
+          blend,
+        );
+        fillGlow(ctx, wisp.x, wisp.y, WISP_RADIUS, color);
       }
     }
 
@@ -906,10 +1081,12 @@ function GameCanvas() {
       ctx.save();
       ctx.translate(-camera.x, -camera.y);
       renderTiles(backgroundColor, tileAccentColor);
+      renderPlants();
       renderParticles(now);
       renderRings(now);
       renderBraziers(now);
       renderCrystals(now);
+      renderWisps();
       renderPlayer();
       renderFloatingTexts(now);
       ctx.restore();

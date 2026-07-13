@@ -66,3 +66,17 @@ export function equalPowerGains(t: number): { a: number; b: number } {
   const angle = (clamped * Math.PI) / 2;
   return { a: Math.cos(angle), b: Math.sin(angle) };
 }
+
+// 1 within innerRadius, 0 beyond outerRadius, smoothstep in between (over raw distance,
+// not the squared input — smoothstep of the squared value would not be linear-in-distance).
+export function proximityGlow01(
+  distSqValue: number,
+  innerRadius: number,
+  outerRadius: number,
+): number {
+  if (distSqValue <= innerRadius * innerRadius) return 1;
+  if (distSqValue >= outerRadius * outerRadius) return 0;
+  const dist = Math.sqrt(distSqValue);
+  const t = (dist - innerRadius) / (outerRadius - innerRadius);
+  return 1 - smoothstep01(t);
+}
