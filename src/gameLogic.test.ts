@@ -5,6 +5,7 @@ import {
   clampDelta,
   detectReducedMotion,
   distSq,
+  equalPowerGains,
   isWithinRadius,
   lerp,
   lerpColor,
@@ -105,5 +106,28 @@ describe("detectReducedMotion", () => {
 
   it("returns false when matchMedia is unavailable (SSR / unsupported)", () => {
     expect(detectReducedMotion(undefined)).toBe(false);
+  });
+});
+
+describe("equalPowerGains", () => {
+  it("returns {a: 1, b: 0} at t=0 and {a: 0, b: 1} at t=1", () => {
+    const at0 = equalPowerGains(0);
+    expect(at0.a).toBeCloseTo(1);
+    expect(at0.b).toBeCloseTo(0);
+    const at1 = equalPowerGains(1);
+    expect(at1.a).toBeCloseTo(0);
+    expect(at1.b).toBeCloseTo(1);
+  });
+
+  it("keeps a^2 + b^2 === 1 for arbitrary t", () => {
+    for (const t of [0.25, 0.5, 0.75]) {
+      const { a, b } = equalPowerGains(t);
+      expect(a * a + b * b).toBeCloseTo(1);
+    }
+  });
+
+  it("clamps out-of-range t to [0,1]", () => {
+    expect(equalPowerGains(-1)).toEqual(equalPowerGains(0));
+    expect(equalPowerGains(2)).toEqual(equalPowerGains(1));
   });
 });

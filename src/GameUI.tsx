@@ -4,10 +4,12 @@ import Settings from "lucide-solid/icons/settings";
 import Sparkles from "lucide-solid/icons/sparkles";
 import X from "lucide-solid/icons/x";
 import { createSignal, For, onCleanup } from "solid-js";
+import * as audio from "./audio";
 import styles from "./Game.module.css";
 import {
   BIOMES,
   gameState,
+  setAudioMuted,
   setMenuOpen,
   setReducedMotion,
   TOTAL_BRAZIERS,
@@ -51,6 +53,13 @@ function GameUI() {
   }
 
   onCleanup(() => clearTimeout(resetArmedTimer));
+
+  function handleSoundChange(on: boolean) {
+    const muted = !on;
+    setAudioMuted(muted);
+    persistence.setAudioMuted(muted);
+    audio.setMuted(muted);
+  }
 
   return (
     <>
@@ -146,6 +155,19 @@ function GameUI() {
                   >
                     <Switch.Label class={styles.switchLabel}>
                       Reduce motion
+                    </Switch.Label>
+                    <Switch.Input class={styles.srOnly} />
+                    <Switch.Control class={styles.switchControl}>
+                      <Switch.Thumb class={styles.switchThumb} />
+                    </Switch.Control>
+                  </Switch.Root>
+                  <Switch.Root
+                    class={styles.switchRoot}
+                    checked={!gameState.audioMuted}
+                    onChange={handleSoundChange}
+                  >
+                    <Switch.Label class={styles.switchLabel}>
+                      Sound
                     </Switch.Label>
                     <Switch.Input class={styles.srOnly} />
                     <Switch.Control class={styles.switchControl}>

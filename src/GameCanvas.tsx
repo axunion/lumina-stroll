@@ -10,6 +10,7 @@ import {
   type SpriteDef,
   type SpriteMap,
 } from "./assets";
+import * as audio from "./audio";
 import styles from "./Game.module.css";
 import {
   biomeBlendAt,
@@ -368,6 +369,13 @@ function GameCanvas() {
     let lastTime = 0;
     let rafId = 0;
     let previousBiome = biomeIdAt(PLAYER_SPAWN.x, CONFIG.biomeBoundaryX);
+    // Computed once per frame in update() and read by both audio and render (avoids
+    // calling biomeBlendAt(player.x, ...) twice for the same frame).
+    let currentBiomeBlend = biomeBlendAt(
+      PLAYER_SPAWN.x,
+      CONFIG.biomeBoundaryX,
+      CONFIG.biomeBlendWidth,
+    );
     // Plain module-local object, not a Signal (spec/01-architecture.md §3.1). Populated
     // progressively as loadSprites resolves each image; render functions fall back to
     // procedural drawing until a given key's entry appears.
@@ -401,6 +409,13 @@ function GameCanvas() {
 
     function handleBlur() {
       keys.clear();
+    }
+
+    // AudioContext creation/resume must happen inside a user-gesture handler, otherwise
+    // browsers leave it suspended (spec/01-architecture.md §9).
+    function handleFirstGesture() {
+      audio.init();
+      audio.setMuted(gameState.audioMuted);
     }
 
     function updateCameraAxis(pos: number, view: number, worldSize: number) {
@@ -559,6 +574,7 @@ function GameCanvas() {
           });
           collectCrystal();
           persistence.markCrystalCollected(crystal.id);
+          audio.playCollectChime();
         }
       }
     }
@@ -579,6 +595,7 @@ function GameCanvas() {
           brazier.litAt = now;
           lightBrazier();
           persistence.markBrazierLit(brazier.id);
+          audio.playBrazierSwell();
         }
       }
     }
@@ -618,6 +635,14 @@ function GameCanvas() {
         previousBiome = nextBiome;
         setCurrentBiome(nextBiome);
       }
+      currentBiomeBlend = biomeBlendAt(
+        player.x,
+        CONFIG.biomeBoundaryX,
+        CONFIG.biomeBlendWidth,
+      );
+      // Same coefficient as the color lerp (spec/02-game-design.md §12); the crossfade
+      // throttle lives inside audio.setBiomeBlend, so calling it every frame is fine.
+      audio.setBiomeBlend(currentBiomeBlend);
 
       updateCrystals(now);
       updateBraziers(now);
@@ -870,11 +895,7 @@ function GameCanvas() {
       if (!ctx) return;
       ctx.clearRect(0, 0, viewWidth, viewHeight);
 
-      const blend = biomeBlendAt(
-        player.x,
-        CONFIG.biomeBoundaryX,
-        CONFIG.biomeBlendWidth,
-      );
+      const blend = currentBiomeBlend;
       const backgroundColor = rgbCss(
         lerpColor(BIOMES[0].background, BIOMES[1].background, blend),
       );
@@ -921,6 +942,10 @@ function GameCanvas() {
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
     window.addEventListener("blur", handleBlur);
+    window.addEventListener("keydown", handleFirstGesture, { once: true });
+    window.addEventListener("pointerdown", handleFirstGesture, {
+      once: true,
+    });
     lastTime = performance.now();
     topUpAmbientParticles(lastTime);
     rafId = requestAnimationFrame(loop);
@@ -931,6 +956,8 @@ function GameCanvas() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("keydown", handleFirstGesture);
+      window.removeEventListener("pointerdown", handleFirstGesture);
     });
   });
 

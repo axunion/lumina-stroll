@@ -59,3 +59,10 @@ export function detectReducedMotion(
   }
   return matchMediaLike("(prefers-reduced-motion: reduce)").matches;
 }
+
+// Clamps t to [0,1]; a = cos(t * PI/2), b = sin(t * PI/2); a^2 + b^2 === 1.
+export function equalPowerGains(t: number): { a: number; b: number } {
+  const clamped = Math.min(1, Math.max(0, t));
+  const angle = (clamped * Math.PI) / 2;
+  return { a: Math.cos(angle), b: Math.sin(angle) };
+}
