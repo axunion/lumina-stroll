@@ -27,6 +27,13 @@ export interface Biome {
   lightTint: Rgb;
 }
 
+export interface Inscription {
+  id: number;
+  x: number;
+  y: number;
+  text: string;
+}
+
 export const BIOMES: readonly Biome[] = [
   {
     id: "enchantedForest",
@@ -48,9 +55,38 @@ export const BIOMES: readonly Biome[] = [
   },
 ] as const;
 
+// World data (spec/03-reference.md §4.5). Kept here rather than GameCanvas.tsx because
+// the Journal tab (GameUI) reads the poem text directly.
+export const INSCRIPTIONS: readonly Inscription[] = [
+  // Enchanted Forest
+  {
+    id: 1,
+    x: 340,
+    y: 900,
+    text: "Someone walked here before you, and smiled.",
+  },
+  { id: 2, x: 1150, y: 520, text: "The dark is not empty. It is resting." },
+  { id: 3, x: 1980, y: 880, text: "Slow steps hear more than fast ones." },
+  // Crystal Cave
+  {
+    id: 4,
+    x: 2600,
+    y: 300,
+    text: "Where the forest ends, the stars continue underground.",
+  },
+  { id: 5, x: 3500, y: 820, text: "Every light you kindle remembers you." },
+  {
+    id: 6,
+    x: 4650,
+    y: 600,
+    text: "There was never anything to win. Only this.",
+  },
+] as const;
+
 // Derived constants, not state (spec/03-reference.md §4.6).
 export const TOTAL_CRYSTALS = 14; // = CRYSTALS.length
 export const TOTAL_BRAZIERS = 6; // = BRAZIERS.length
+export const TOTAL_INSCRIPTIONS = 6; // = INSCRIPTIONS.length
 
 function initialState(save: SaveDataV1 | null): GameState {
   return {

@@ -25,7 +25,9 @@ import type { Rgb } from "./gameStore";
 import {
   BIOMES,
   collectCrystal,
+  discoverInscription,
   gameState,
+  INSCRIPTIONS,
   lightBrazier,
   setCurrentBiome,
 } from "./gameStore";
@@ -78,6 +80,7 @@ interface Wisp {
   y: number;
   heading: number; // radians; current drift direction, turns smoothly
   phase: number; // radians; per-wisp offset for drift variation
+  speed: number; // px/s; current speed, eases toward wander/follow target
 }
 
 interface GlowPlant {
@@ -209,6 +212,8 @@ const CONFIG = {
   plantGlowInnerRadius: 40, // px — distance within which a glow plant is at max brightness
   plantGlowOuterRadius: 140, // px — distance beyond which a glow plant's brightness bottoms out
   plantGlowFloor: 0.15, // 0-1 — glow plant's minimum brightness (never fully dark)
+  inscriptionProximity: 60, // px — distance at which inscription text appears
+  inscriptionTextDurationMs: 4000, // ms — inscription text display duration
 } as const;
 
 const PLAYER_SPAWN = { x: 240, y: 600 };
@@ -293,6 +298,7 @@ function createWisps(count: number): Wisp[] {
       y: Math.random() * CONFIG.worldHeight,
       heading: Math.random() * Math.PI * 2,
       phase: Math.random() * Math.PI * 2,
+      speed: CONFIG.wispWanderSpeed,
     });
   }
   return wisps;
@@ -317,6 +323,7 @@ const BURST_COLOR: Rgb = CRYSTAL_COLOR;
 const FLOATING_TEXT_COLOR: Rgb = [220, 245, 255];
 const PLANT_COLOR_FOREST: Rgb = [150, 230, 150];
 const PLANT_COLOR_CAVE: Rgb = [180, 150, 255];
+const INSCRIPTION_STONE_COLOR: Rgb = [120, 130, 160];
 
 // Implementation choice: spec/02-game-design.md §4 only specifies "sine, ±4%, slow" for
 // the player light pulse — no period is given in spec/03-reference.md.
@@ -389,6 +396,15 @@ const WISP_TURN_RATE_RAD_PER_SEC = 1.2;
 // per-wisp by `phase`) rather than jumping between random targets — this is what makes
 // the drift "turn smoothly" by construction, with no discrete decision points.
 const WISP_WANDER_ANGULAR_SPEED_RAD_PER_SEC = 0.5;
+// Max speed change per second, mirroring the turn-rate cap above so the wander/follow
+// transition eases in speed as well as heading — neither jumps ("急加速・急旋回はしない").
+const WISP_ACCEL_PX_PER_SEC2 = 30;
+
+// Procedural fallback for the inscription stone (spec/03-reference.md §7: "石碑の縦長
+// ラウンド矩形"). Not in the halo-maintenance list (spec/02-game-design.md §10) — no glow.
+const INSCRIPTION_STONE_WIDTH = 20; // px
+const INSCRIPTION_STONE_HEIGHT = 40; // px
+const INSCRIPTION_STONE_CORNER_RADIUS = 6; // px
 
 const PLANT_GLOW_RADIUS = 8; // px — glow plant procedural glow radius
 
@@ -443,6 +459,10 @@ function GameCanvas() {
     // doesn't have to rescan the whole (up to CONFIG.maxParticles) array every frame.
     let liveAmbientCount = 0;
     const floatingTexts: FloatingText[] = [];
+    const inscriptionTexts: FloatingText[] = [];
+    // Edge-trigger state (spec/02-game-design.md §13.3): which inscriptions the player is
+    // currently standing near, so re-entering proximity re-shows the text.
+    const inscriptionsInRange = new Set<number>();
     const rings: Ring[] = [];
     const wisps = createWisps(CONFIG.wispCount);
     const lastFlameSpawnAt = new Map<number, number>();
@@ -703,11 +723,17 @@ function GameCanvas() {
         const diff = angleDiff(wisp.heading, desiredHeading);
         wisp.heading +=
           Math.abs(diff) < maxTurn ? diff : Math.sign(diff) * maxTurn;
-        const speed = closingIn
+        const targetSpeed = closingIn
           ? CONFIG.wispFollowSpeed
           : CONFIG.wispWanderSpeed;
-        wisp.x += Math.cos(wisp.heading) * speed * seconds;
-        wisp.y += Math.sin(wisp.heading) * speed * seconds;
+        const maxAccel = WISP_ACCEL_PX_PER_SEC2 * seconds;
+        const speedDiff = targetSpeed - wisp.speed;
+        wisp.speed +=
+          Math.abs(speedDiff) < maxAccel
+            ? speedDiff
+            : Math.sign(speedDiff) * maxAccel;
+        wisp.x += Math.cos(wisp.heading) * wisp.speed * seconds;
+        wisp.y += Math.sin(wisp.heading) * wisp.speed * seconds;
         wisp.x = Math.min(
           Math.max(wisp.x, WISP_RADIUS),
           CONFIG.worldWidth - WISP_RADIUS,
@@ -716,6 +742,39 @@ function GameCanvas() {
           Math.max(wisp.y, WISP_RADIUS),
           CONFIG.worldHeight - WISP_RADIUS,
         );
+      }
+    }
+
+    // Edge-triggered proximity text (spec/02-game-design.md §13.3): shows on entering
+    // range, re-shows on re-entering after leaving. Discovery (store + save + bell) fires
+    // only the first time a given inscription is ever entered.
+    function updateInscriptions(now: number) {
+      for (const inscription of INSCRIPTIONS) {
+        const inRange = isWithinRadius(
+          player.x,
+          player.y,
+          inscription.x,
+          inscription.y,
+          CONFIG.inscriptionProximity,
+        );
+        const wasInRange = inscriptionsInRange.has(inscription.id);
+        if (!inRange) {
+          if (wasInRange) inscriptionsInRange.delete(inscription.id);
+          continue;
+        }
+        if (wasInRange) continue;
+        inscriptionsInRange.add(inscription.id);
+        inscriptionTexts.push({
+          x: inscription.x,
+          y: inscription.y,
+          text: inscription.text,
+          bornAt: now,
+        });
+        if (!gameState.discoveredInscriptionIds.includes(inscription.id)) {
+          discoverInscription(inscription.id);
+          persistence.markInscriptionDiscovered(inscription.id);
+          audio.playInscriptionBell();
+        }
       }
     }
 
@@ -766,11 +825,13 @@ function GameCanvas() {
       updateCrystals(now);
       updateBraziers(now);
       updateWisps(dt, now);
+      updateInscriptions(now);
       spawnFootprintParticle(now, isMoving);
       spawnFlameParticles(now);
       topUpAmbientParticles(now);
       updateParticles(dt, now);
       removeExpired(floatingTexts, now, CONFIG.floatingTextDurationMs);
+      removeExpired(inscriptionTexts, now, CONFIG.inscriptionTextDurationMs);
       removeExpired(rings, now, RING_DURATION_MS);
     }
 
@@ -984,23 +1045,55 @@ function GameCanvas() {
       ctx.globalAlpha = 1;
     }
 
-    function renderFloatingTexts(now: number) {
-      if (!ctx || floatingTexts.length === 0) return;
+    // Shared by the "+1" pickup text and the inscription poem text — both rise-while-
+    // fading normally and fade-in-place under reduced-motion (spec/02-game-design.md §9,
+    // the "碑文テキスト" row explicitly reuses the "+1" rule).
+    function renderFloatingTexts(
+      texts: readonly FloatingText[],
+      now: number,
+      durationMs: number,
+    ) {
+      if (!ctx || texts.length === 0) return;
       ctx.font = "16px sans-serif";
       ctx.textAlign = "center";
       ctx.fillStyle = rgbCss(FLOATING_TEXT_COLOR);
       // reduced-motion (spec/02-game-design.md §9): fades in place, no rise.
       const rise = gameState.reducedMotion ? 0 : FLOATING_TEXT_RISE_PX;
-      for (const text of floatingTexts) {
-        const t = progressRatio(
-          text.bornAt,
-          now,
-          CONFIG.floatingTextDurationMs,
-        );
+      for (const text of texts) {
+        const t = progressRatio(text.bornAt, now, durationMs);
         ctx.globalAlpha = 1 - t;
         ctx.fillText(text.text, text.x, text.y - rise * t);
       }
       ctx.globalAlpha = 1;
+    }
+
+    // Stone is visible whether or not the inscription has been discovered yet (spec/
+    // 02-game-design.md §13.3). Not in the halo-maintenance list (§10) — no glow.
+    function renderInscriptions() {
+      if (!ctx) return;
+      const sprite = sprites.inscription;
+      ctx.fillStyle = rgbCss(INSCRIPTION_STONE_COLOR);
+      for (const inscription of INSCRIPTIONS) {
+        if (sprite) {
+          drawSprite(
+            ctx,
+            sprite,
+            SPRITE_DEFS_BY_KEY.inscription,
+            inscription.x,
+            inscription.y,
+          );
+          continue;
+        }
+        ctx.beginPath();
+        ctx.roundRect(
+          inscription.x - INSCRIPTION_STONE_WIDTH / 2,
+          inscription.y - INSCRIPTION_STONE_HEIGHT,
+          INSCRIPTION_STONE_WIDTH,
+          INSCRIPTION_STONE_HEIGHT,
+          INSCRIPTION_STONE_CORNER_RADIUS,
+        );
+        ctx.fill();
+      }
     }
 
     function renderPlayer() {
@@ -1082,13 +1175,19 @@ function GameCanvas() {
       ctx.translate(-camera.x, -camera.y);
       renderTiles(backgroundColor, tileAccentColor);
       renderPlants();
+      renderInscriptions();
       renderParticles(now);
       renderRings(now);
       renderBraziers(now);
       renderCrystals(now);
       renderWisps();
       renderPlayer();
-      renderFloatingTexts(now);
+      renderFloatingTexts(floatingTexts, now, CONFIG.floatingTextDurationMs);
+      renderFloatingTexts(
+        inscriptionTexts,
+        now,
+        CONFIG.inscriptionTextDurationMs,
+      );
       ctx.restore();
 
       renderLighting(now);

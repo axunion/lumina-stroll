@@ -251,6 +251,14 @@
   font-weight: 600;
 }
 
+.logItemLocked {
+  opacity: 0.5;
+}
+
+.inscriptionText {
+  font-style: italic;
+}
+
 .switchRoot {
   display: flex;
   align-items: center;

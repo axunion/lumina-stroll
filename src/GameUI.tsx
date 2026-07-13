@@ -3,17 +3,19 @@ import Flame from "lucide-solid/icons/flame";
 import Settings from "lucide-solid/icons/settings";
 import Sparkles from "lucide-solid/icons/sparkles";
 import X from "lucide-solid/icons/x";
-import { createSignal, For, onCleanup } from "solid-js";
+import { createSignal, For, onCleanup, Show } from "solid-js";
 import * as audio from "./audio";
 import styles from "./Game.module.css";
 import {
   BIOMES,
   gameState,
+  INSCRIPTIONS,
   setAudioMuted,
   setMenuOpen,
   setReducedMotion,
   TOTAL_BRAZIERS,
   TOTAL_CRYSTALS,
+  TOTAL_INSCRIPTIONS,
 } from "./gameStore";
 import { persistence } from "./persistence";
 
@@ -143,6 +145,33 @@ function GameUI() {
                             ? " · current"
                             : ""}
                         </li>
+                      )}
+                    </For>
+                    <li class={styles.logItem}>
+                      Inscriptions: {gameState.discoveredInscriptionIds.length}{" "}
+                      / {TOTAL_INSCRIPTIONS}
+                    </li>
+                    <For each={INSCRIPTIONS}>
+                      {(inscription) => (
+                        <Show
+                          when={gameState.discoveredInscriptionIds.includes(
+                            inscription.id,
+                          )}
+                          fallback={
+                            <li
+                              class={`${styles.logItem} ${styles.logItemLocked}`}
+                              aria-label="Undiscovered inscription"
+                            >
+                              …
+                            </li>
+                          }
+                        >
+                          <li class={styles.logItem}>
+                            <span class={styles.inscriptionText}>
+                              {inscription.text}
+                            </span>
+                          </li>
+                        </Show>
                       )}
                     </For>
                   </ul>
