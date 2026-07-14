@@ -19,5 +19,8 @@ description: How to launch and eyeball Lumina Stroll locally. Used by /run and /
   "Enchanted Forest"; settings (gear) button top-right.
 - Arrow keys and WASD move the player; arrow keys must not scroll the page.
 
-Feature-by-feature expectations live in `spec/07-verification-checklist.md` — use it when
-verifying a specific change.
+The implementation (M0–M13) is complete, so there is no per-feature checklist left to
+consult — eyeball the golden path (move around, collect a crystal, light a brazier, cross
+the biome boundary, open Settings) and watch for console errors or visual regressions.
+When verifying a **swapped-in asset**, follow the checkout steps in
+`spec/asset-guide.md` §6 instead.

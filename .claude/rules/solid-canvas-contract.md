@@ -6,8 +6,9 @@ paths:
 
 # Solid + Canvas Reactivity Contract
 
-Hard constraints from `spec/01-architecture.md` that are easy to violate by habit. The full
-contract is the spec; this file lists only the traps.
+Lumina Stroll's implementation is complete (M0–M13); this file is now the sole record of
+the architecture contract for any future edits to `src/**/*.ts(x)`. These constraints are
+easy to violate by habit.
 
 ## Store contract (exactly 7 fields)
 
@@ -17,8 +18,9 @@ contract is the spec; this file lists only the traps.
   derives from `isMenuOpen`; totals are constants, not state; reset-button armed state is
   component-local).
 - Writes go through the exported action functions only. Never export `setState`.
-- Store actions never touch `persistence` — write-through happens at the event source
-  (`spec/01-architecture.md` §2).
+- Store actions never touch `persistence` — write-through happens at the event source (the
+  code path that has the id: `GameCanvas.tsx` for progress, `GameUI.tsx` for
+  `audioMuted`/reset).
 
 ## Frame state is NOT reactive
 
@@ -41,7 +43,40 @@ contract is the spec; this file lists only the traps.
 
 ## Before writing GameCanvas / GameUI code
 
-Re-read the pitfall checklist in `spec/01-architecture.md` §7 (stuck keys on menu open,
-`preventDefault` for arrow keys only, clear key Set on `blur`, lucide per-icon imports,
-`import type` under `verbatimModuleSyntax`, no `enum` under `erasableSyntaxOnly`, Kobalte
-Portal/defaults). Do not restate those rules here — the spec is the source.
+Re-read this checklist before touching `GameCanvas.tsx` / `GameUI.tsx`:
+
+- **Don't destructure Solid props/store** — reactivity breaks. Always read via `props.x` /
+  `gameState.x`.
+- **Untracked rAF reads are correct** (see above) — don't bridge them with `createEffect`.
+- **Kobalte `Dialog` portals to `<body>`** — canvas overlap is handled by the z-index plan
+  in `GameUI.tsx` / `Game.module.css`, not by moving the portal. Style Dialog parts with
+  `class={styles.x}` per-part, not globally.
+- **Clear the pressed-key `Set` when the menu opens** — Kobalte's focus trap swallows
+  `keyup` while the Dialog is open, so a key held at open time reads as still-pressed
+  ("stuck key" bug: player walks off the instant Escape closes the menu). Handle this at
+  the top of `update()` when `isMenuOpen` flips true, or in the keydown handler.
+- **`preventDefault` only for arrow keys** (to stop page scroll) — never for WASD. Skip
+  entirely when `e.metaKey || e.ctrlKey || e.altKey` is set, so browser shortcuts still
+  work.
+- **Clear the pressed-key `Set` on `window` `blur`** — catches `keyup` events missed during
+  a tab switch.
+- **Don't hand-roll Escape handling** — Kobalte calls `onOpenChange(false)`; the canvas
+  keydown handler should just early-return while `gameState.isMenuOpen` is true.
+- **Import lucide-solid icons individually** —
+  `import Sparkles from 'lucide-solid/icons/sparkles'`. Barrel imports slow the dev server
+  and hurt tree-shaking.
+- **`verbatimModuleSyntax`** — type-only imports must be `import type { ... }`.
+- **`erasableSyntaxOnly`** — no `enum` (use string unions); no constructor parameter
+  properties.
+- **`noUnusedLocals` / `noUnusedParameters`** — unused symbols are build errors.
+- **Read `matchMedia` once**, at store init (see above) — no live listener.
+- **Catch `Image.decode()` rejections** — a missing sprite PNG 404s silently into the
+  fallback; an unhandled rejection would leak into the console.
+- **Create/`resume()` the `AudioContext` only inside a user-gesture handler** — anywhere
+  else, autoplay restrictions leave it `suspended`.
+- **Wrap every `localStorage` access in try/catch** — Safari private mode throws on
+  `setItem`, and in some environments even referencing `window.localStorage` throws.
+- **Wrap `JSON.parse` in try/catch** — a corrupted save must never crash the app; treat it
+  as no save.
+- **A restored brazier's `litAt` is treated as already-eased** — don't replay the lighting
+  animation on boot.

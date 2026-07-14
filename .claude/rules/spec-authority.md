@@ -1,39 +1,27 @@
 # Spec Authority
 
-The `spec/` directory is the single source of truth for this project. Consult it before
-every implementation decision. Do not duplicate its content here or in code — reference it.
+The game implementation (M0–M13 of the original roadmap) is complete. The shipped code in
+`src/` and the git history are now the source of truth for architecture, behavior, types,
+numbers, and UI structure — do not restate them here or duplicate them into new docs.
 
-## Document map and conflict resolution
-
-- The authority map lives in `spec/00-overview.md` §6. In short: architecture decisions →
-  `01-architecture.md`, behavior → `02-game-design.md`, **all numbers/types/data** →
-  `03-reference.md`, UI structure and class names → `04-ui.md`, implementation order →
-  `05-roadmap.md`, tests → `06-test-plan.md`, final QA → `07-verification-checklist.md`,
-  asset production guidance (non-runtime) → `08-asset-guide.md`.
-- On conflict: numbers, types, and coordinates — `03-reference.md` wins. Behavior
-  descriptions — `02-game-design.md` wins.
-- Numeric values are copied from `03-reference.md` only. Never restate values in other
-  files, comments, or docs; refer to them by key (e.g. `CONFIG.playerSpeed`). Declared
-  exception: `08-asset-guide.md` mirrors the sprite manifest sizes and palette hex values
-  so its briefs are copy-pasteable prompts; `03-reference.md` still wins on mismatch.
+The only remaining document is `spec/asset-guide.md`: guidance for producing (typically
+AI-generated) replacement image assets for the 9 swappable sprites. Consult it before any
+asset-production work. Its sizes/anchors mirror `src/assets.ts`'s `SPRITE_DEFS` — if the
+code changes, update the guide to match; the code wins on any mismatch.
 
 ## Non-requirements (never implement)
 
-- `spec/00-overview.md` §3: no combat, enemies, damage, timers, game-over, score pressure,
-  or obstacles.
-- `spec/00-overview.md` §7 (out of scope): no third biome, no gamepad support, no sprite
-  animation frames / atlases, no audio asset files (sound is Web Audio synthesis only), no
-  player-position saving. Also do NOT lay groundwork for these (abstractions, optional
-  parameters, hooks) — YAGNI is a hard rule here.
+- No combat, enemies, damage, timers, game-over, score pressure, or obstacles.
+- No third biome, no gamepad support, no sprite animation frames / atlases, no audio asset
+  files (sound is Web Audio synthesis only), no player-position saving. Also do NOT lay
+  groundwork for these (abstractions, optional parameters, hooks) — YAGNI is a hard rule
+  here.
 
-## Milestone workflow
+## Verification
 
-- Implement in the order of `spec/05-roadmap.md`. M0–M7 are done; remaining work is
-  M8 → M13. Each milestone's verification must pass before starting the next.
-- Verification commands: `pnpm check` (biome + tsc), `pnpm test` (vitest), `pnpm dev`,
-  `pnpm build && pnpm preview`.
+- `pnpm check` (biome + tsc), `pnpm test` (vitest), `pnpm dev`, `pnpm build && pnpm preview`.
 
 ## When the spec is wrong or incomplete
 
-Never silently deviate. If an implementation decision contradicts the spec or falls into a
-gap, propose an update to the relevant spec file first, get it agreed, then implement.
+Never silently deviate. If an implementation decision contradicts `spec/asset-guide.md` or
+falls into a gap, propose an update to it first, get it agreed, then implement.
