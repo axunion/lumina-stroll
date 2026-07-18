@@ -4,10 +4,12 @@ The game implementation (M0–M13 of the original roadmap) is complete. The ship
 `src/` and the git history are now the source of truth for architecture, behavior, types,
 numbers, and UI structure — do not restate them here or duplicate them into new docs.
 
-The only remaining document is `spec/asset-guide.md`: guidance for producing (typically
-AI-generated) replacement image assets for the 9 swappable sprites. Consult it before any
-asset-production work. Its sizes/anchors mirror `src/assets.ts`'s `SPRITE_DEFS` — if the
-code changes, update the guide to match; the code wins on any mismatch.
+The only remaining spec document is `spec/asset-guide.md`: guidance for producing
+(typically AI-generated) replacement image assets for the 9 swappable sprites. Consult it
+before any asset-production work. Its sizes/anchors mirror `src/assets.ts`'s
+`SPRITE_DEFS` — if the code changes, update the guide to match; the code wins on any
+mismatch. The production procedure itself (normalize/QA scripts under `scripts/`) is
+documented in `docs/asset-pipeline.md` and driven by the `asset-pipeline` skill.
 
 ## Non-requirements (never implement)
 

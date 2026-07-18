@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Raw AI-generated images awaiting normalization (docs/asset-pipeline.md)
+assets-intake/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
